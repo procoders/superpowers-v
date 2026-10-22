@@ -85,7 +85,7 @@ conversation). The builder, in its own context:
 6. For large work only: splits independent parts across native subagents or the Workflow tool, choosing each one's model
    by significance (Opus for judgment, Sonnet for mechanical work), with exclusive file lanes and worktrees when more
    than one writes (§6).
-The main agent attaches the plan (`run plan`), and fixes go back to the same builder (cached context), never to a new one.
+The builder attaches its own plan (`run plan`, then `run stage --to build`) before changing code; fixes go back to the same builder (cached context), never to a new one.
 
 ### 4.5 Verification — the bar
 
