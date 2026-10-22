@@ -48,7 +48,7 @@ product and users · data lifecycle (create / change / retire with history / del
 | standard (default) | every territory area | pre-flights by their conditions (§7) |
 | thorough | every area, plus an edge-case walk per entity | all pre-flights that can run, an offered Codex plan review, the native `/security-review` suggested at the end |
 
-Depth adds questions and checks. It never removes the full tier's minimum: tests, executable review, real-world check and scope check.
+When `.claude/compound-v.json` says `"stance": "cost-aware"`, suggest quick. Depth adds questions and checks. It never removes the full tier's minimum: tests, executable review, real-world check and scope check.
 
 Stop asking when every area is covered (answered, marked as your call, or n.a. with a reason).
 

@@ -27,6 +27,18 @@ check "verify mentions review record"    "$(has skills/verify/SKILL.md 'review r
 check "verify mentions waive live"       "$(has skills/verify/SKILL.md 'waive live')"
 check "verify mentions status"           "$(has skills/verify/SKILL.md 'status')"
 
+for s in init onboard; do
+  f="skills/$s/SKILL.md"
+  check "$f has name and description" "$( [ "$(field "$f" name)$(field "$f" description)" = 11 ] && echo 1 || echo 0)"
+  check "$f is at most 150 lines" "$([ -f "$REPO/$f" ] && [ "$(wc -l <"$REPO/$f")" -le 150 ] && echo 1 || echo 0)"
+done
+check "init writes worktree.baseRef head"   "$(has skills/init/SKILL.md '"baseRef": "head"')"
+check "init writes the Edit deny rule"      "$(has skills/init/SKILL.md 'Edit(/docs/compound-v/runs/**)')"
+check "init writes no Write() path rule"    "$(grep -q '"Write(' "$REPO/skills/init/SKILL.md" && echo 0 || echo 1)"
+check "init warns about the codex stop-review gate" "$(has skills/init/SKILL.md stopReviewGate)"
+check "init offers to disable Superpowers"  "$(has skills/init/SKILL.md 'superpowers@claude-plugins-official": false')"
+check "pr-review points at docs/compound-v/specs" "$(has skills/pr-review/SKILL.md docs/compound-v/specs)"
+
 for a in v-memory code-archaeologist doc-validator domain-expert reviewer; do
   check "agents/$a.md exists" "$([ -f "$REPO/agents/$a.md" ] && echo 1 || echo 0)"
 done
