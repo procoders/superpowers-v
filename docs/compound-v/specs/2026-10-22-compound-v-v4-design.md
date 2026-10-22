@@ -15,8 +15,8 @@ confirmed it:
   (plain 37 → 63) for ~$2.
 - **Domain research and checklists** add production depth (GDPR, VAT, storage erasure, backups, sessions, CSRF, limits).
 - **Executable review + a fix round** catches what reading misses (default password, `Origin: null` + `no-referrer`).
-- **The custom orchestration engine added nothing** at this size: the light flow (A5, ~$8, 17 min) beat the full v3
-  pipeline (~$87, 49 min) on all four blind judgements (rubric 94/99 vs 62/72); on an existing codebase C-light beat
+- **The custom orchestration engine added nothing** at this size: the light flow (A5, $4.82 corrected, 17 min) beat the full v3
+  pipeline ($31.71 corrected, 49 min) on all four blind judgements (rubric 94/99 vs 62/72); on an existing codebase C-light beat
   C-full (75/78 vs 69/69) at half the cost. Prose-table parallelism without a manifest was safe in one run but 23 %
   slower and 31 % dearer.
 
@@ -29,7 +29,7 @@ instructions.
 **Goals**
 - A standalone plugin `compound-v` (no dependency on Superpowers) whose cycle is: brainstorm → conditional pre-flights
   → plan → native build → verification with receipts.
-- Beat A5 on the salon benchmark at **$5–7** CLI cost, and be no worse than C-light on the brownfield feature — pass
+- Beat A5 on the salon benchmark at **$5–7** CLI cost (A5 itself cost $4.82 once the cumulative-cost correction in `docs/v4/salon-report.md` is applied; the $5–7 budget is Oleg's absolute figure and stands), and be no worse than C-light on the brownfield feature — pass
   rules in §7.
 - Engage on a plain request in a set-up project (the triage hook), as v3.9 does.
 

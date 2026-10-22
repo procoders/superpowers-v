@@ -105,12 +105,12 @@ the Claude Code CLI's own estimate.
 
 | Build | Agent time | CLI cost | Rubric (2 judgements) | Capabilities "considered" (2 judgements) |
 |---|---|---|---|---|
-| Light flow (A5): owner answers + domain research + checklists + one review/fix pass | ~17.5 min | ~$8.1 | 94 / 99 | 72 / 79 |
-| Compound V 3.9.1 full pipeline incl. fix round (B) | ~49 min | ~$87 | 62 / 72 | 52 / 65 |
-| Owner answers + one review/fix pass, no checklists (A4) | ~11 min | ~$3.8 | 45 / 49 (critical defect) | 45 / 34 |
+| Light flow (A5): owner answers + domain research + checklists + one review/fix pass | ~17.5 min | $4.82 | 94 / 99 | 72 / 79 |
+| Compound V 3.9.1 full pipeline incl. fix round (B) | ~49 min | $31.71 | 62 / 72 | 52 / 65 |
+| Owner answers + one review/fix pass, no checklists (A4) | ~4.3 min (first session only) | $1.77 | 45 / 49 (critical defect) | 45 / 34 |
 
 On an existing codebase (one feature on A5's code), the light flow scored 75 / 78 against the full
-v3 pipeline's 69 / 69, at ~15.5 min and ~$8.8 against ~28 min and ~$17.8.
+v3 pipeline's 69 / 69, at ~15.5 min and $5.30 against ~28 min and $15.77.
 
 What the runs showed, and what v4 keeps:
 
