@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Model policy: Opus by default, Sonnet for mechanical execution and lookups, **never Haiku** (also `claude plugin eval --judge-model sonnet`). Fable only by explicit choice.
+- Model policy: Opus by default, Sonnet for mechanical execution and lookups, **never Haiku** except the read-only `v-memory` agent, whose frontmatter is `model: haiku` (Oleg, 2026-10-22). Also `claude plugin eval --judge-model sonnet`). Fable only by explicit choice.
 - Python stdlib only, 3.9 floor; hooks in bash with `"shell": "bash"`. Every hook is registered `"<script>" || true`, has `timeout` ≤ 10 s, starts with `trap 'exit 0' EXIT`, and prints a decision only on success.
 - Mutable state lives only in `docs/compound-v/` (project) or `~/.claude/compound-v/` (machine), never under `${CLAUDE_PLUGIN_ROOT}`.
 - Enforcement fields (receipts, outcomes, scope verdicts, usage) are written by `scripts/compound-v.py` from real command results, never by the model.
@@ -336,8 +336,8 @@ Content decisions, each one a requirement for the prose:
   - Finish with `status` and report the outcome, the missing/failed steps, waivers and usage. Say "done" only when the outcome is verified.
   - When no browser can run, ask the user whether to waive; only on their yes, `waive live --reason "<their words>"`.
   - A light run with no run record starts one: `run start --tier light --request-file … --change-set <globs of the intended files>`.
-- **agents:** `v-memory` (the V-memory layer: grep + read over `docs/compound-v/`, no index), `code-archaeologist`, `doc-validator` and `domain-expert` are `model: sonnet` with `maxTurns: 25` and no `memory`. `reviewer` is `model: opus` with `maxTurns: 60`; it may run commands but edits nothing outside its checkout and writes only the findings file. Delete each agent's Step 0 V-memory recall and the `superpowers-v` cache lookups.
-- **lint-frontmatter.py:** `SONNET_ELIGIBLE_AGENTS = {"v-memory", "code-archaeologist", "doc-validator", "domain-expert"}`, `MEMORYLESS_AGENTS` = all agents. Every other agent must be `model: opus`. Haiku stays rejected everywhere.
+- **agents:** `v-memory` (the V-memory layer: grep + read over `docs/compound-v/`, no index) is `model: haiku`, `tools: Read, Grep, Glob`, `maxTurns: 15`. `code-archaeologist`, `doc-validator` and `domain-expert` are `model: sonnet` with `maxTurns: 25` and no `memory`. `reviewer` is `model: opus` with `maxTurns: 60`; it may run commands but edits nothing outside its checkout and writes only the findings file. Delete each agent's Step 0 V-memory recall and the `superpowers-v` cache lookups.
+- **lint-frontmatter.py:** `HAIKU_ELIGIBLE_AGENTS = {"v-memory"}` (tools limited to Read, Grep and Glob, enforced by the lint), `SONNET_ELIGIBLE_AGENTS = {"code-archaeologist", "doc-validator", "domain-expert"}`, `MEMORYLESS_AGENTS` = all agents. Every other agent must be `model: opus`. Haiku is rejected everywhere else: other agents, skills, and prompts that name a model.
 
 - [ ] **Step 1:** Write `tests/hooks/test-skills.sh`. It asserts:
   - each of the four skills exists with `name` + `description`;
@@ -345,7 +345,7 @@ Content decisions, each one a requirement for the prose:
   - `plan` mentions `compound-v-plan` and `## Acceptance`;
   - `verify` mentions `review record`, `waive live` and `status`;
   - `python3 scripts/lint-frontmatter.py .` exits 0;
-  - `grep -ri haiku agents skills` matches nothing except a policy line.
+  - `grep -ril haiku agents skills` lists only `agents/v-memory.md`.
 - [ ] **Step 2:** Run. Expected: FAIL.
 - [ ] **Step 3:** Write the skills and agents. Keep each `SKILL.md` ≤ 150 lines; the detail goes in the sibling files.
 - [ ] **Step 4:** Run the test and `claude plugin validate .`. Expected: pass.
@@ -383,7 +383,7 @@ Content decisions, each one a requirement for the prose:
 
 - **plugin.json:** `name: "compound-v"`, `version: "4.0.0"`, a one-sentence description of the cycle, keywords without `superpowers`/`orchestrator`, and `types`.
 - **marketplace.json:** `plugins: [{"name": "compound-v", "source": "./"}, {"name": "superpowers-v", "source": {"source": "github", "repo": "procoders/superpowers-v", "ref": "v3"}}]`.
-- **validate.yml** keeps the JSON validity checks, version lockstep (select `.name == "compound-v"`), CHANGELOG lockstep, no-Haiku, `lint-frontmatter.py`, shellcheck on `hooks/*.sh`, and the dead-link scan (excluding `docs/archive/**`). The anti-fabrication grep covers `scripts`, `skills`, `hooks` and `docs`, exempting `docs/archive/**` and `docs/compound-v/{specs,plans,preflight}/**`.
+- **validate.yml** keeps the JSON validity checks, version lockstep (select `.name == "compound-v"`), CHANGELOG lockstep, no-Haiku (with the `v-memory` exception), `lint-frontmatter.py`, shellcheck on `hooks/*.sh`, and the dead-link scan (excluding `docs/archive/**`). The anti-fabrication grep covers `scripts`, `skills`, `hooks` and `docs`, exempting `docs/archive/**` and `docs/compound-v/{specs,plans,preflight}/**`.
 - **validate.yml** adds `python3 -m unittest discover -s tests/core -v`, `for t in tests/hooks/*.sh; do bash "$t"; done`, `claude`-free mod type-check if the existing job has one, and the size guard: `cat scripts/compound-v.py scripts/cvcore/*.py hooks/*.sh hooks/run-band.tsx | wc -l` must be ≤ 2500 (print the number).
 - **validate.yml** drops the manifest gate, the state.json gate, the epic, job_result and example steps, the all-selftests sweep and `pip install jsonschema`.
 

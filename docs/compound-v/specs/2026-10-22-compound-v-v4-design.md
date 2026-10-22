@@ -48,7 +48,7 @@ instructions.
 
 ## 3. Constraints (from project policy and lessons)
 
-- Model policy: Opus by default, Sonnet for mechanical execution and lookups, **never Haiku**; Fable only by explicit
+- Model policy: Opus by default, Sonnet for mechanical execution and lookups, **never Haiku** except the read-only `v-memory` docs search (Oleg, 2026-10-22); Fable only by explicit
   choice. Under the cost-aware stance the advisor is off or Opus, never Fable.
 - No unmeasured numbers in docs or output (anti-fabrication CI guard stays).
 - Critical steps are backed by mechanism (hooks + small scripts), not only prose (lesson "prose vs mechanism").
@@ -64,8 +64,8 @@ instructions.
 Covers, as territory not a script: the product and its users; the data lifecycle (create / change / retire with
 history / delete, what the operator changes without a developer); jurisdiction, data handled and deployment; security
 and every form; operations; **edge cases** as their own topic. For large work it asks **how deep** to go; depth may add
-pre-flights and checks but never removes the tier's minimum (§4.5). Prior decisions are looked up in `docs/` by a cheap
-Sonnet subagent (read-only) and shown as evidence. Output: a written design in `docs/compound-v/specs/`.
+pre-flights and checks but never removes the tier's minimum (§4.5). Prior decisions are looked up in `docs/` by the cheap
+read-only `v-memory` subagent (Haiku) and shown as evidence. Output: a written design in `docs/compound-v/specs/`.
 
 ### 4.2 Pre-flights (conditional)
 - **Domain research — always, light**: ≤4 web searches; output "requirement → source → acceptance check", owner facts
@@ -155,7 +155,7 @@ receipts. Unclassifiable ⇒ full.
   needs it), `onboard`, `pr-review`, `models` (model map for the plan table), `adr` (optional). No
   dispatch/orchestrate/resume/status/epic.
 - **V-memory** (Oleg): the name now means the docs layer itself. Project docs under `docs/compound-v/` (specs,
-  plans, pre-flights, runs, receipts, decisions) are searched on demand by a cheap `v-memory` subagent (grep + read,
+  plans, pre-flights, runs, receipts, decisions) are searched on demand by a cheap `v-memory` subagent on Haiku (grep + read,
   read-only), with no index, no vector store and no embeddings. Claude Code's own project memory stays alongside.
 - **Session continuity**: the banner and compaction hooks restore position from the run record, spec and plan.
 
