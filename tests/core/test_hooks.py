@@ -189,6 +189,32 @@ class HooksTest(unittest.TestCase):
         self.assertIsNone(self.stop(active=True))
         self.assertIsNone(self.load(rec)["outcome"])
 
+    def test_receipt_after_incomplete_reopens_and_can_verify(self):
+        rec = self.start()
+        self.assertEqual("block", self.stop()["decision"])
+        self.assertIsNone(self.stop())
+        self.assertEqual("incomplete", self.load(rec)["outcome"])
+        self.verify(rec)
+        rec = self.load(rec)
+        self.assertIsNone(rec["outcome"])
+        self.assertEqual("incomplete", rec["outcomes"][0]["outcome"])
+        self.assertEqual(rec["id"], run.active(self.repo, "s1")["id"])
+        self.assertIsNone(self.stop())
+        self.assertEqual(("verified", "done"), (self.load(rec)["outcome"], self.load(rec)["stage"]))
+
+    def test_reopened_run_still_refuses_new_snapshot(self):
+        rec = self.start()
+        self.stop()
+        self.stop()
+        rec = self.load(rec)
+        rec["test_cmd"] = "false"
+        run.save(self.repo, rec)
+        helpers.write(self.repo, {"src/a.js": "a2\n"})
+        receipts.run_step(self.repo, self.load(rec), "tests")
+        self.assertEqual("block", self.stop()["decision"])
+        self.assertIsNone(self.stop())
+        self.assertEqual("failed", self.load(rec)["outcome"])
+
     def test_stop_hook_active_records_outcome(self):
         rec = self.start()
         self.verify(rec)

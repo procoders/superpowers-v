@@ -156,9 +156,20 @@ def bind(repo, rec: dict, session_id) -> dict:
     return rec
 
 
+def reopen(repo, rec: dict, reason: str) -> dict:
+    if rec.get("outcome") in ("incomplete", "failed"):
+        rec.setdefault("outcomes", []).append({
+            "outcome": rec["outcome"], "reason": reason,
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+        rec["outcome"] = None
+        save(repo, rec)
+    return rec
+
+
 def set_stage(repo, rec: dict, stage: str) -> dict:
     if stage not in STAGES:
         raise RunError(f"unknown stage {stage!r}")
+    reopen(repo, rec, f"stage {stage}")
     if rec.get("outcome") is not None:
         raise RunError(f"run {rec['id']} is closed ({rec['outcome']})")
     cur, new = STAGES.index(rec["stage"]), STAGES.index(stage)

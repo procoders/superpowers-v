@@ -116,6 +116,7 @@ def execute(cmd, cwd, timeout_s, stdin_file=None):
 def run_step(repo, rec, step) -> dict:
     if step not in ("tests", "live", "scope"):
         raise RunError(f"unknown step {step!r}")
+    run.reopen(repo, rec, f"receipt {step}")
     required(rec, repo)
     cur = _current(repo, rec)
     if step == "scope":
@@ -164,6 +165,7 @@ def findings_path(repo, rec, n) -> Path:
 def record_review(repo, rec, findings_file, reviewer) -> dict:
     if reviewer not in ("codex", "claude"):
         raise RunError("reviewer must be codex or claude")
+    run.reopen(repo, rec, "review")
     if rec["review_round"] >= MAX_ROUNDS:
         raise RunError("review rounds exhausted")
     try:
@@ -268,6 +270,7 @@ def waive(repo, rec, step, reason: str) -> dict:
         raise RunError(f"only {', '.join(WAIVABLE)} can be waived")
     if not reason.strip():
         raise RunError("a waiver needs the user's reason")
+    run.reopen(repo, rec, f"waive {step}")
     rec["waivers"][step] = {"reason": reason.strip(), "at": _now(),
                             "by": "user-in-chat (not machine-verifiable)"}
     run.save(repo, rec)

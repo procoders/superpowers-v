@@ -96,7 +96,7 @@ Report to the user:
 
 Say **done** only when the outcome is `verified`. For incomplete or failed, name the step and the reason. When the run's escalation reasons include `auth` or `payments`, or the depth was `thorough`, suggest the native `/security-review` as an optional extra, not a receipt.
 
-The Stop hook refuses the first stop of an unverified run, once, with the reason. Continue with this skill. If you are waiting on the user or a step cannot run, say so and stop again. The run is then recorded incomplete.
+The Stop hook refuses the first stop of an unverified run, once, with the reason. Continue with this skill. If you are waiting on the user or a step cannot run, say so and stop again. The run is then recorded incomplete. An incomplete run reopens when you write a receipt (or a review, a waiver, a stage move), so carry on once the user answers; a verified run stays closed.
 
 ## Common failures
 

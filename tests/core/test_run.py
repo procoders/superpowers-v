@@ -126,6 +126,20 @@ class RunTest(unittest.TestCase):
         self.assertIn("pass --id", r.stderr)
         self.assertEqual(0, helpers.cli(self.repo, "run", "show", "--id", a["id"]).returncode)
 
+    def test_verified_stays_closed(self):
+        rec = run.start(self.repo, tier="light", request="x")
+        rec["outcome"] = "verified"
+        run.save(self.repo, rec)
+        with self.assertRaises(run.RunError):
+            run.set_stage(self.repo, rec, "verify")
+        self.assertEqual("verified", run.reopen(self.repo, rec, "test")["outcome"])
+        rec2 = run.start(self.repo, tier="light", request="y")
+        rec2["outcome"] = "incomplete"
+        run.save(self.repo, rec2)
+        rec2 = run.set_stage(self.repo, rec2, "verify")
+        self.assertIsNone(rec2["outcome"])
+        self.assertEqual("stage verify", rec2["outcomes"][0]["reason"])
+
     def test_closed_run_not_active(self):
         rec = run.start(self.repo, tier="light", request="x")
         rec["outcome"] = "verified"
