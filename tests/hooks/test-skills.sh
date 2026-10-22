@@ -33,7 +33,8 @@ for s in init onboard; do
   check "$f is at most 150 lines" "$([ -f "$REPO/$f" ] && [ "$(wc -l <"$REPO/$f")" -le 150 ] && echo 1 || echo 0)"
 done
 check "init writes worktree.baseRef head"   "$(has skills/init/SKILL.md '"baseRef": "head"')"
-check "init writes the Edit deny rule"      "$(has skills/init/SKILL.md 'Edit(/docs/compound-v/runs/**)')"
+check "init never writes a runs deny rule"   "$(has skills/init/SKILL.md 'Do **not** add a `permissions.deny` rule')"
+check "init offers the playwright sandbox exclusion" "$(has skills/init/SKILL.md 'python3 * receipt live *')"
 check "init writes no Write() path rule"    "$(grep -q '"Write(' "$REPO/skills/init/SKILL.md" && echo 0 || echo 1)"
 check "init warns about the codex stop-review gate" "$(has skills/init/SKILL.md stopReviewGate)"
 check "init offers to disable Superpowers"  "$(has skills/init/SKILL.md 'superpowers@claude-plugins-official": false')"

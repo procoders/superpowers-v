@@ -54,13 +54,12 @@ Report the probes in a few lines, then list each proposed change with its diff, 
 **② `.claude/settings.json`** (the project's native settings, merged key by key):
 
 ```json
-{"worktree": {"baseRef": "head"},
- "permissions": {"deny": ["Edit(/docs/compound-v/runs/**)"]}}
+{"worktree": {"baseRef": "head"}}
 ```
 
 - `worktree.baseRef: "head"` makes native `isolation: "worktree"` subagents branch from the current HEAD instead of the default branch, so parallel lanes see this run's work. It applies project-wide, to interactive `--worktree` sessions too. A plugin cannot ship this setting, which is why init writes it.
-- The deny rule protects run records natively. `Edit(...)` rules cover every built-in file-editing tool (Write included) and Bash redirections and `sed`/`tee` targets. The leading `/` anchors the path at the project root. A `Write(...)` path rule would never be consulted, so it is not written. Receipts stay signed either way, and the plugin's guard hook covers projects that have not run init.
-- Append to an existing `permissions.deny` list; never replace it.
+- Do **not** add a `permissions.deny` rule for `docs/compound-v/runs/`. An `Edit(...)` deny is also applied as a sandbox write deny, and then the CLI cannot write the run records itself (probed 2026-10-22: `PermissionError: Operation not permitted`). Run records are protected by the plugin's guard hook (Write/Edit/MultiEdit/NotebookEdit) and by the signed receipts.
+- **When the project uses the Claude Code sandbox and is a web app**: the macOS sandbox denies Chromium's Mach port registration, so a real-browser test cannot start inside it. Offer to add `"sandbox": {"excludedCommands": ["npx playwright test *", "python3 * receipt live *"]}` plus matching `Bash(...)` allow rules. Say plainly that these two commands then run outside the sandbox. Skip it when the sandbox is off.
 
 **③ Superpowers** (only when it is enabled): both brainstorm skills would fire on the same request. Offer to disable it for this project only, in `.claude/settings.json`:
 `{"enabledPlugins": {"superpowers@claude-plugins-official": false}}`. Compound V neither calls Superpowers nor defers to it.
