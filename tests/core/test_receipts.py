@@ -365,6 +365,43 @@ class ReceiptsTest(Base):
             f"review round 1: pass (0 blocker/high of 0 findings) "
             f"docs/compound-v/runs/{self.rec['id']}-review-1.json", r.stdout.strip())
 
+    def test_long_step_does_not_clobber_review(self):
+        self.steps()
+        stale = self.reload()
+        self.assertEqual("pass", self.review()["result"])
+        receipts.run_step(self.repo, stale, "tests")
+        rec = self.reload()
+        self.assertEqual(1, rec["review_round"])
+        self.assertEqual({"tests", "review", "live", "scope"}, set(rec["receipts"]))
+        self.assertEqual(1, len(rec["reviews"]))
+        self.assertEqual(rec, stale)
+
+    def test_lock_not_held_during_step(self):
+        lock = self.repo / "docs/compound-v/runs" / f".{self.rec['id']}.lock"
+        rec = self.reload()
+        rec["test_cmd"] = ("python3 -c \"import fcntl, os, sys; fd = os.open('%s', os.O_RDWR); "
+                           "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\"" % lock)
+        run.save(self.repo, rec)
+        receipts.note_checkout(self.repo, self.reload(), "x", "/tmp/x")
+        self.assertTrue(lock.exists())
+        self.assertEqual("pass", receipts.run_step(self.repo, self.reload(), "tests")["result"])
+        self.assertEqual(snapshot.tree(self.repo), receipts._current(self.repo, rec)["snapshot"])
+
+    def test_concurrent_updates_keep_all(self):
+        import threading
+        rid = self.rec["id"]
+
+        def worker(n):
+            for i in range(10):
+                receipts.note_reviewer_stop(self.repo, run.load(self.repo, rid), f"{n}-{i}",
+                                            "compound-v:reviewer")
+        threads = [threading.Thread(target=worker, args=(n,)) for n in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(80, len(self.reload()["reviewer_stops"]))
+
     def test_cli_status_exit_codes(self):
         r = helpers.cli(self.repo, "status")
         self.assertEqual(3, r.returncode, r.stderr)

@@ -31,6 +31,7 @@ class HudTest(unittest.TestCase):
     def test_brief_names_missing_steps(self):
         rec = run.start(self.repo, tier="full", request="add salon booking")
         rec["test_cmd"] = "true"
+        run.save(self.repo, rec)
         run.set_stage(self.repo, rec, "verify")
         receipts.run_step(self.repo, run.load(self.repo, rec["id"]), "tests")
         text = hud.brief(self.repo, "s1")

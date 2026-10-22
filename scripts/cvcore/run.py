@@ -5,6 +5,8 @@ import json
 import os
 import re
 import tempfile
+import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,6 +25,14 @@ _STR, _NUM = (str,), (int, float)
 REQUIRED = (("test_cmd", _STR), ("change_set", list), ("is_web", bool), ("live_cmd", _STR))
 OPTIONAL = (("setup_cmd", _STR), ("lanes", dict), ("budget_usd", _NUM),
             ("budget_split", dict), ("test_globs", list), ("timeout_s", _NUM))
+
+
+try:
+    import fcntl
+except ImportError:  # Windows: run records are written without a lock
+    fcntl = None
+
+LOCK_WAIT_S = 30.0
 
 
 class RunError(Exception):
@@ -119,6 +129,39 @@ def save(repo, rec: dict) -> None:
         raise
 
 
+@contextmanager
+def _locked(repo, run_id: str):
+    d = _dir(repo)
+    d.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(d / f".{run_id}.lock"), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        if fcntl:
+            deadline = time.monotonic() + LOCK_WAIT_S
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.monotonic() > deadline:
+                        raise RunError(f"run {run_id} is busy (lock held)") from None
+                    time.sleep(0.02)
+        yield
+    finally:
+        os.close(fd)
+
+
+def update(repo, rec, fn) -> dict:
+    rid = rec if isinstance(rec, str) else rec["id"]
+    with _locked(repo, rid):
+        fresh = load(repo, rid)
+        fn(fresh)
+        save(repo, fresh)
+    if isinstance(rec, dict):
+        rec.clear()
+        rec.update(fresh)
+    return fresh
+
+
 def _open_runs(repo) -> list:
     runs = []
     for p in _dir(repo).glob("*.json"):
@@ -150,34 +193,41 @@ def active(repo, session_id=None):
 
 
 def bind(repo, rec: dict, session_id) -> dict:
-    if session_id and session_id not in rec.setdefault("sessions", []):
-        rec["sessions"].append(session_id)
-        save(repo, rec)
+    def apply(r):
+        if session_id not in r.setdefault("sessions", []):
+            r["sessions"].append(session_id)
+    if session_id and session_id not in rec.get("sessions", []):
+        update(repo, rec, apply)
     return rec
+
+
+def _reopen(r: dict, reason: str) -> None:
+    if r.get("outcome") in ("incomplete", "failed"):
+        r.setdefault("outcomes", []).append({
+            "outcome": r["outcome"], "reason": reason,
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+        r["outcome"] = None
 
 
 def reopen(repo, rec: dict, reason: str) -> dict:
     if rec.get("outcome") in ("incomplete", "failed"):
-        rec.setdefault("outcomes", []).append({
-            "outcome": rec["outcome"], "reason": reason,
-            "at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
-        rec["outcome"] = None
-        save(repo, rec)
+        update(repo, rec, lambda r: _reopen(r, reason))
     return rec
 
 
 def set_stage(repo, rec: dict, stage: str) -> dict:
     if stage not in STAGES:
         raise RunError(f"unknown stage {stage!r}")
-    reopen(repo, rec, f"stage {stage}")
-    if rec.get("outcome") is not None:
-        raise RunError(f"run {rec['id']} is closed ({rec['outcome']})")
-    cur, new = STAGES.index(rec["stage"]), STAGES.index(stage)
-    if new < cur and (rec["stage"], stage) != ("verify", "build"):
-        raise RunError(f"cannot move run back from {rec['stage']} to {stage}")
-    rec["stage"] = stage
-    save(repo, rec)
-    return rec
+
+    def apply(r):
+        _reopen(r, f"stage {stage}")
+        if r.get("outcome") is not None:
+            raise RunError(f"run {r['id']} is closed ({r['outcome']})")
+        cur, new = STAGES.index(r["stage"]), STAGES.index(stage)
+        if new < cur and (r["stage"], stage) != ("verify", "build"):
+            raise RunError(f"cannot move run back from {r['stage']} to {stage}")
+        r["stage"] = stage
+    return update(repo, rec, apply)
 
 
 def _check(data: dict, key: str, typ, required: bool) -> None:
@@ -226,7 +276,7 @@ def attach_plan(repo, rec: dict, plan_path) -> dict:
         rel = path.resolve().relative_to(Path(repo).resolve()).as_posix()
     except ValueError:
         rel = str(path)
-    rec.update({
+    fields = {
         "plan": rel, "test_cmd": data["test_cmd"], "live_cmd": data["live_cmd"],
         "is_web": data["is_web"], "change_set": data["change_set"],
         "setup_cmd": data.get("setup_cmd"), "lanes": data.get("lanes") or {},
@@ -234,7 +284,7 @@ def attach_plan(repo, rec: dict, plan_path) -> dict:
         "budget_split": data.get("budget_split") or dict(BUDGET_SPLIT),
         "test_globs": globs, "timeout_s": data.get("timeout_s", TIMEOUT_S),
         "acceptance_rev": hashlib.sha256(section.encode("utf-8")).hexdigest(),
-        "test_files": {**hash_test_files(repo, globs), **(rec.get("test_files") or {})},
-    })
-    save(repo, rec)
-    return rec
+    }
+    hashed = hash_test_files(repo, globs)
+    return update(repo, rec, lambda r: r.update(
+        fields, test_files={**hashed, **(r.get("test_files") or {})}))

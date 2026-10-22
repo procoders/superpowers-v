@@ -13,7 +13,7 @@ from .gitio import GitError, git, require_commit, worktrees, zsplit
 
 RUNS = "docs/compound-v/runs"
 EVIDENCE_NAMES = re.compile(
-    r"(\d{8}-\d{6}-[a-z0-9-]+(-review-\d+|-plan-review)?\.json|\.tmp-[^/]*\.json|triage\.log)\Z")
+    r"(\d{8}-\d{6}-[a-z0-9-]+(-review-\d+|-plan-review)?\.json|\.tmp-[^/]*\.json|\.[^/]*\.lock|triage\.log)\Z")
 CANON = ("-c", "core.autocrlf=false", "-c", "core.fileMode=true",
          "-c", f"core.excludesFile={os.devnull}", "-c", "core.safecrlf=false",
          "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false")

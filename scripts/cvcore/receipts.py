@@ -68,22 +68,30 @@ def _current(repo, rec) -> dict:
             "acceptance_rev": rec.get("acceptance_rev"), "tier": rec["tier"]}
 
 
-def _store(repo, rec, step, cur, fields) -> dict:
+def _receipt(repo, rec, step, cur, fields) -> dict:
     receipt = {"step": step, "run": rec["id"], "at": _now(), "exit": None, "cmd": None,
                "duration_s": None, "tail": "", **cur, **fields}
     receipt["mac"] = _mac(repo, receipt)
-    rec["receipts"][step] = receipt
-    run.save(repo, rec)
     return receipt
+
+
+def _store(repo, rec, step, cur, fields) -> dict:
+    receipt = _receipt(repo, rec, step, cur, fields)
+    run.update(repo, rec, lambda r: r["receipts"].__setitem__(step, receipt))
+    return receipt
+
+
+def _escalate(r: dict, reasons) -> None:
+    if r["tier"] == "light" and r.get("outcome") is None:
+        r["tier"] = "full"
+        r["receipts"] = {}
+        r.setdefault("escalations", []).append({"at": _now(), "reasons": reasons})
 
 
 def required(rec, repo) -> list:
     diff = classify_diff(repo, rec["base_commit"])
     if rec["tier"] == "light" and diff["tier"] == "full" and rec.get("outcome") is None:
-        rec["tier"] = "full"
-        rec["receipts"] = {}
-        rec.setdefault("escalations", []).append({"at": _now(), "reasons": diff["reasons"]})
-        run.save(repo, rec)
+        run.update(repo, rec, lambda r: _escalate(r, diff["reasons"]))
     if rec["tier"] == "full":
         return list(STEPS)
     return ["tests", "scope"] + (["live"] if diff["touches_ui"] else [])
@@ -194,50 +202,60 @@ def record_review(repo, rec, findings_file, reviewer) -> dict:
         return _store(repo, rec, "review", cur, {
             "result": "error", "reason": "stale review", "cmd": reviewer,
             "review_snapshot": data["snapshot"]})
+    found = None
     if reviewer == "claude":
         issued = [c for c in rec.get("checkouts", []) if c.get("tree") == data["snapshot"]]
-        first = min((c["at"] for c in issued), default=None)
-        stops = [s for s in rec.get("reviewer_stops", [])
-                 if not s.get("consumed") and first and s.get("at", "") > first]
-        if not stops and issued:
-            found = _reviewer_transcript(repo, rec, issued)
-            if found:
-                rec.setdefault("reviewer_stops", []).append(
-                    {"agent_id": found[0], "agent_type": found[1], "at": _now(),
-                     "source": "transcript"})
-                stops = rec["reviewer_stops"][-1:]
-    else:
-        stops = [e for e in rec.get("external", {}).get("codex", [])
-                 if e.get("ok") and e.get("tree") == data["snapshot"] and not e.get("consumed")]
-    if not stops:
-        return _store(repo, rec, "review", cur, {
-            "result": "error", "reason": "no reviewer run recorded", "cmd": reviewer})
-    stops[0]["consumed"] = True
-    n = rec["review_round"] + 1
-    dest = findings_path(repo, rec, n)
-    dest.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    open_ = [f["id"] for f in data["findings"] if f["severity"] in BLOCKING]
-    result = "fail" if open_ else "pass"
-    rec["review_round"] = n
-    rec.setdefault("reviews", []).append({"round": n, "result": result, "reviewer": reviewer,
-                                          "open": open_, "file": f"{run.RUNS}/{dest.name}"})
-    return _store(repo, rec, "review", cur, {
-        "result": result, "cmd": reviewer, "round": n, "findings": data["findings"],
-        "findings_file": f"{run.RUNS}/{dest.name}",
-        "tail": data["summary"][:2000], "open": open_})
+        found = _reviewer_transcript(repo, rec, issued) if issued else None
+    out = {}
+
+    def apply(r):
+        if r["review_round"] >= MAX_ROUNDS:
+            raise RunError("review rounds exhausted")
+        stops = _evidence(r, data["snapshot"], reviewer, found)
+        if not stops:
+            out["r"] = r["receipts"]["review"] = _receipt(repo, r, "review", cur, {
+                "result": "error", "reason": "no reviewer run recorded", "cmd": reviewer})
+            return
+        stops[0]["consumed"] = True
+        n = r["review_round"] + 1
+        dest = findings_path(repo, r, n)
+        dest.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        open_ = [f["id"] for f in data["findings"] if f["severity"] in BLOCKING]
+        result = "fail" if open_ else "pass"
+        r["review_round"] = n
+        r.setdefault("reviews", []).append({"round": n, "result": result, "reviewer": reviewer,
+                                            "open": open_, "file": f"{run.RUNS}/{dest.name}"})
+        out["r"] = r["receipts"]["review"] = _receipt(repo, r, "review", cur, {
+            "result": result, "cmd": reviewer, "round": n, "findings": data["findings"],
+            "findings_file": f"{run.RUNS}/{dest.name}",
+            "tail": data["summary"][:2000], "open": open_})
+    run.update(repo, rec, apply)
+    return out["r"]
+
+
+def _evidence(r: dict, snap: str, reviewer: str, found) -> list:
+    if reviewer == "codex":
+        return [e for e in r.get("external", {}).get("codex", [])
+                if e.get("ok") and e.get("tree") == snap and not e.get("consumed")]
+    first = min((c["at"] for c in r.get("checkouts", []) if c.get("tree") == snap), default=None)
+    stops = [s for s in r.get("reviewer_stops", [])
+             if not s.get("consumed") and first and s.get("at", "") > first]
+    used = {s.get("agent_id") for s in r.get("reviewer_stops", []) if s.get("consumed")}
+    if not stops and found and found[0] not in used:
+        r.setdefault("reviewer_stops", []).append(
+            {"agent_id": found[0], "agent_type": found[1], "at": _now(), "source": "transcript"})
+        stops = r["reviewer_stops"][-1:]
+    return stops
 
 
 def note_checkout(repo, rec, tree_id: str, dest) -> dict:
-    rec.setdefault("checkouts", []).append({"tree": tree_id, "dest": str(dest), "at": _now()})
-    run.save(repo, rec)
-    return rec
+    entry = {"tree": tree_id, "dest": str(dest), "at": _now()}
+    return run.update(repo, rec, lambda r: r.setdefault("checkouts", []).append(entry))
 
 
 def note_reviewer_stop(repo, rec, agent_id, agent_type) -> dict:
-    rec.setdefault("reviewer_stops", []).append(
-        {"agent_id": agent_id, "agent_type": agent_type, "at": _now()})
-    run.save(repo, rec)
-    return rec
+    entry = {"agent_id": agent_id, "agent_type": agent_type, "at": _now()}
+    return run.update(repo, rec, lambda r: r.setdefault("reviewer_stops", []).append(entry))
 
 
 def _ts(text: str) -> datetime:
@@ -287,10 +305,9 @@ def waive(repo, rec, step, reason: str) -> dict:
     if not reason.strip():
         raise RunError("a waiver needs the user's reason")
     run.reopen(repo, rec, f"waive {step}")
-    rec["waivers"][step] = {"reason": reason.strip(), "at": _now(),
-                            "by": "user-in-chat (not machine-verifiable)"}
-    run.save(repo, rec)
-    return rec["waivers"][step]
+    waiver = {"reason": reason.strip(), "at": _now(), "by": "user-in-chat (not machine-verifiable)"}
+    run.update(repo, rec, lambda r: r["waivers"].__setitem__(step, waiver))
+    return waiver
 
 
 def budget(rec) -> dict:

@@ -127,10 +127,10 @@ def codex(repo, rec, out_path, *, model=MODEL, timeout_s=1200) -> Path:
             _unchanged(repo, tid, dest)
             ok = True
     finally:
-        rec.setdefault("external", {}).setdefault("codex", []).append({
-            "duration_s": round(time.monotonic() - t0, 3), "tree": tid, "ok": ok,
-            "at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
-        run.save(repo, rec)
+        entry = {"duration_s": round(time.monotonic() - t0, 3), "tree": tid, "ok": ok,
+                 "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        run.update(repo, rec, lambda r: r.setdefault("external", {}).setdefault(
+            "codex", []).append(entry))
     data["snapshot"] = tid
     Path(out_path).write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
                               encoding="utf-8")

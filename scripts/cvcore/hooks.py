@@ -60,20 +60,24 @@ def _code_changed(repo, old_tree: str, new_tree: str) -> list:
 
 
 def _attach(repo, rec, sid, transcript, sd: Path) -> None:
-    run.bind(repo, rec, sid)
-    if transcript:
-        rec.setdefault("transcripts", {})[sid] = transcript
     base = sd / f"baseline-{_key(sid)}"
     baseline = None
-    if base.exists() and sid not in (rec.get("usage") or {}):
-        try:
-            baseline = float(base.read_text())
-        except ValueError:
-            pass
-    usage.record(repo, rec, sid, transcript, baseline=baseline, save=False)
+    try:
+        baseline = float(base.read_text()) if base.exists() else None
+    except ValueError:
+        pass
+    cs = usage.cost_state(sid, transcript)
+
+    def apply(r):
+        if sid not in r.setdefault("sessions", []):
+            r["sessions"].append(sid)
+        if transcript:
+            r.setdefault("transcripts", {})[sid] = transcript
+        if cs is not None:
+            usage.apply_cost(r, sid, cs, None if sid in (r.get("usage") or {}) else baseline)
+    run.update(repo, rec, apply)
     if base.exists() and sid in (rec.get("usage") or {}):
         base.unlink()
-    run.save(repo, rec)
 
 
 def stop_hook(payload: dict, repo: Path, budget_s=6.0, state_dir=None):
@@ -98,30 +102,38 @@ def stop_hook(payload: dict, repo: Path, budget_s=6.0, state_dir=None):
             early = [p for p in changed(repo, rec["base_commit"]) if not p.startswith("docs/")]
             key = f"{tree(repo)}:{rec['stage']}:early-code"
             if early and not again and key not in rec["stop_refusals"]:
-                rec["stop_refusals"].append(key)
-                run.save(repo, rec)
+                run.update(repo, rec, lambda r: r["stop_refusals"].append(key))
                 return _block(EARLY_TEXT.format(id=rec["id"]))
             return None
         if rec["stage"] not in ("build", "verify") or time.monotonic() - t0 > budget_s:
             return None
         s = status(repo, rec)
         if s["outcome"] == "verified":
-            rec.update(outcome="verified", stage="done")
-            run.save(repo, rec)
+            run.update(repo, rec, lambda r: r.update(outcome="verified", stage="done"))
             return None
-        key = f"{tree(repo)}:{rec['stage']}"
-        if key not in rec["stop_refusals"]:
-            if again:
-                return None
-            rec["stop_refusals"].append(key)
-            run.save(repo, rec)
+        key, said = f"{tree(repo)}:{rec['stage']}", {}
+
+        def decide(r):
+            if key in r["stop_refusals"]:
+                r["outcome"] = "failed" if s["failed"] else "incomplete"
+            elif not again:
+                r["stop_refusals"].append(key)
+                said["block"] = True
+        run.update(repo, rec, decide)
+        if said:
             return _block(f"Compound V run {rec['id']} is not verified: {_gaps(s)}. "
                           + CONTINUE_TEXT)
-        rec["outcome"] = "failed" if s["failed"] else "incomplete"
-        run.save(repo, rec)
         return None
+    except Exception as e:
+        _fail_open(repo, "stop", e)
+        return None
+
+
+def _fail_open(repo, hook: str, e: Exception) -> None:
+    try:
+        _event(repo, {"event": "hook_error", "hook": hook, "error": str(e)[:200]})
     except Exception:
-        return None
+        pass
 
 
 def subagent_stop_hook(payload: dict, repo: Path):
@@ -306,6 +318,7 @@ def main(event: str) -> int:
         payload = json.loads(sys.stdin.read() or "{}")
         if not isinstance(payload, dict):
             return 0
+        run.LOCK_WAIT_S = 2.0
         if event == "guard":
             out = guard_hook(payload)
         else:

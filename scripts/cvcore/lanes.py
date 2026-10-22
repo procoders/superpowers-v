@@ -28,9 +28,8 @@ def _abort(repo) -> None:
 
 
 def _refuse(repo, rec, task, branch, reason, violations=()) -> dict:
-    rec.setdefault("lane_state", {})[task] = {"branch": branch, "status": "refused",
-                                              "reason": reason}
-    run.save(repo, rec)
+    state = {"branch": branch, "status": "refused", "reason": reason}
+    run.update(repo, rec, lambda r: r.setdefault("lane_state", {}).__setitem__(task, state))
     return {"status": "refused", "reason": reason, "violations": list(violations)}
 
 
@@ -76,9 +75,8 @@ def finish(repo, rec, task, branch) -> dict:
     except GitError as e:
         _abort(repo)
         return _refuse(repo, rec, task, branch, f"commit failed: {e}")
-    rec.setdefault("lane_state", {})[task] = {
-        "branch": branch, "base": base, "status": "merged",
-        "commit": git(repo, "rev-parse", "HEAD").decode().strip()}
-    run.save(repo, rec)
+    state = {"branch": branch, "base": base, "status": "merged",
+             "commit": git(repo, "rev-parse", "HEAD").decode().strip()}
+    run.update(repo, rec, lambda r: r.setdefault("lane_state", {}).__setitem__(task, state))
     return {"status": "merged", "reason": "", "violations": []}
 

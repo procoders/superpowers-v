@@ -39,6 +39,7 @@ class UsageTest(unittest.TestCase):
     def spend(self, rec, total, stage=None, unknown=False, session="s1"):
         if stage:
             rec["stage"] = stage
+            run.save(self.repo, rec)
         with open(self.transcript, "a") as f:
             f.write(OTHER + "\n" + cost_line(total, session, unknown) + "\n")
         return usage.record(self.repo, rec, session, self.transcript)
