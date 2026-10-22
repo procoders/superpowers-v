@@ -47,9 +47,12 @@ those, instead of one command per case. Budget: at most 20 turns. Run them in th
 2. Each "same rules as X" clause, rule by rule: list every check X's code enforces (caps, closures,
    breaks, in-progress items, retries) and run each one against the new path.
 3. Every state-changing route with HEAD, OPTIONS and GET, plus malformed %-encoding, a multibyte
-   token, a wrong content type and a few hundred parameters. Any 500 is a finding.
+   token, a wrong content type and a few hundred parameters. Any 500 is a finding. Then every public
+   state-changing form: a cross-site POST without its token must be refused, and the same form
+   submitted twice (including an "any" / auto-assign choice) must create one result.
 4. Volume abuse from one source with rotating identity: many successes from one IP with invented
-   phones or emails, addresses inside one IPv6 /64, one code guessed from many IPs.
+   phones or emails, addresses inside one IPv6 /64, one code guessed from many IPs. Names with ZWJ /
+   ZWNJ and combining marks must be accepted.
 5. Sessions: replay the cookie after logout, after a password change, and after expiry with the
    clock advanced.
 6. Production start with every value copied from `.env.example`, the README and the operator docs,

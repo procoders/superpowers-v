@@ -6,8 +6,9 @@ These are the checklists that won the salon benchmark: plain Claude Code plus th
 
 ## R. The request itself (first, before any other list)
 - R1 Every rule the request or spec states is its own acceptance row, in the request's words. A clause like "follows the same rules as X" expands into **one row per rule of X** (each limit, window, cap and check X enforces), never one row for the whole clause.
-- R2 Every number in the request or spec (a time limit, a count, a window, a size) gets **boundary rows**: just inside, exactly at, just outside, with the comparison (`<` or `≤`) written in the row and computed at full precision (no truncated seconds).
+- R2 Every number in the request or spec (a time limit, a count, a window, a size) gets **boundary rows**: just inside, exactly at, just outside, with the comparison (`<` or `≤`) written in the row and computed at full precision (no truncated seconds). Read the phrase, then write the comparison: "up to N before X" allows the action while at least N remains, so exactly N is **allowed**; "at least N" is ≥ N; "within N" is ≤ N; "more than N" / "less than N" are strict. The exact-N row states allowed or refused accordingly.
 - R3 For a change to existing code: every existing rule the new path must also obey is listed and has a row; the existing tests still pass unchanged.
+- R4 No new restriction on the user beyond the request and the spec. A protective limit you add (a cap on moves, a lockout) is listed as your call, must never refuse something the stated rules allow, and prefers throttling abuse over capping legitimate use.
 
 ## J. Jurisdiction and domain (from the builder's domain research)
 - J1 Every DR row of the plan's research table is an acceptance row, or is marked out of scope with the spec's agreement.
@@ -29,23 +30,25 @@ These are the checklists that won the salon benchmark: plain Claude Code plus th
 - P2 An error state for each user mistake, with a message saying what to do.
 - P3 "No longer valid" states: cancelled, expired, already used, moved. Revisiting an old link later shows the right one.
 - P4 Keyboard use and screen-reader labels on every control; small screens.
+- P6 Names and free text accept every script, including joiners (ZWJ, ZWNJ) and combining marks; validation rejects only control characters and length.
 - P5 The business's contact details wherever a customer needs them (confirmations, errors, the privacy page).
 
 ## F. Every form and endpoint
 - F1 Authentication **fails closed** when unconfigured: no default or placeholder secret works, in any environment.
 - F2 Sessions expire, and are revoked on logout and on credential change, server-side.
-- F3 CSRF protection on every state-changing form, and **tested in a real browser**. An Origin check that rejects `null` breaks every form under `Referrer-Policy: no-referrer`, and only a real browser shows it.
+- F3 CSRF protection on every state-changing form, and **tested in a real browser**. An Origin check that rejects `null` breaks every form under `Referrer-Policy: no-referrer`, and only a real browser shows it. That includes **public, unauthenticated forms** (booking, sign-up, contact), not only the staff area.
 - F4 Output escaping everywhere user input is shown.
 - F5 Input and body-size limits, with the correct status codes.
-- F6 Rate limits on login, on public submissions, and on lookups of codes or tokens.
+- F6 Rate limits on login, on public submissions, and on lookups of codes or tokens. Key them per IPv6 /64 (not per single address) and per target (the phone, the code, the account), not only per source.
 - F7 No personal data in pages, URLs or responses that a third party could see, cache or index.
 - F8 Malformed input never yields a 500, and neither does any HTTP method on any route (`HEAD`, `OPTIONS`, an unknown verb): 405 or the GET answer, never a crash.
-- F9 Concurrency: two requests for the same last slot, or a double submit, leave exactly one result.
+- F9 Concurrency: two requests for the same last slot, or a double submit, leave exactly one result. The same person submitting the same form twice (double click, back and resubmit) creates **one** result, also when an "any" / auto-assign option would pick a different resource the second time: use a one-time token per rendered form.
 
 ## O. Operations
 - O1 First run: setup steps, and a clear error when something is missing.
 - O2 Configuration is validated at startup; production refuses to start with missing or placeholder values.
 - O3 Logs carry no personal data.
+- O3b Files holding personal data (the database, its WAL, backups, exports) are created with mode 0600.
 - O4 A health check.
 - O5 Deployment behind HTTPS and a proxy (trusted proxy headers, secure cookies).
 - O6 Upgrade path: migrations, and keeping data across versions.
