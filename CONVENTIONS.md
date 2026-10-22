@@ -16,10 +16,10 @@ states it.
 ## Model policy
 
 - Opus by default: building, judging, reviewing (`agents/reviewer.md` is `model: opus`).
-- Sonnet for lookups and mechanical work: the three pre-flight agents, and plan tasks with nothing
-  to decide. (`scripts/lint-frontmatter.py:40-49`)
+- Sonnet only for mechanical work with nothing to decide, chosen per task at dispatch time, never in
+  agent frontmatter. (`scripts/lint-frontmatter.py:40-45`)
 - **Never Haiku**, with one exception: the read-only `v-memory` docs search, whose tools must stay
-  `Read, Grep, Glob`. (`agents/v-memory.md:4-5`, `scripts/lint-frontmatter.py:50-51`)
+  `Read, Grep, Glob`. (`agents/v-memory.md:4-5`, `scripts/lint-frontmatter.py:46-47`)
 - Fable only when the user chooses it, never in frontmatter.
 - `scripts/lint-frontmatter.py` enforces this and CI runs it.
 

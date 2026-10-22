@@ -12,15 +12,14 @@ One cycle, in this order. Each step is a skill (`/compound-v:<name>`):
 1. **brainstorm** — one question per message about the product, data lifecycle, jurisdiction,
    forms, operations and edge cases; writes the spec to `docs/compound-v/specs/` and starts the run
    record.
-2. **pre-flights** (launched by brainstorm, in parallel) — domain research always; code archaeology
-   when git tracks source code; a library audit when the spec names or implies a dependency. Each
-   writes one file under `docs/compound-v/preflight/`.
-3. **plan** — tasks with their tests, an acceptance table (behaviour → check), the four checklists
-   answered, a task → model table, lanes only for parallel work, and one machine-readable
-   `compound-v-plan` block that the CLI attaches to the run.
-4. **build** — Claude Code builds natively: one agent by default, native worktree subagents only when
-   the plan has lanes, each merged through `lane finish`.
-5. **verify** — tests, a real-browser (or main-flow) check, a scope check and, for full runs, an
+2. **build** — one fresh `builder` subagent does, in its own context: domain research (≤ 4
+   searches), a reading of the code it touches when git tracks code, a library check when a
+   dependency changes, then the **plan** (following the `plan` skill: an acceptance table, the
+   checklists answered, tasks with tests, the `compound-v-plan` block that `run plan` attaches),
+   then the code with its tests. Every fix goes back to the same builder by `SendMessage`. Parallel
+   work only for large independent parts (the Workflow tool only with `Parallel: yes (owner)` in the
+   spec), with lanes merged through `lane finish`.
+3. **verify** — tests, a real-browser (or main-flow) check, a scope check and, for full runs, an
    executable review in an isolated checkout with at most one fix round. Each step writes a signed
    receipt bound to the working tree. Outcome: `verified`, `incomplete` or `failed`.
 
@@ -96,16 +95,17 @@ Plus the band mod `hooks/run-band.tsx` (stage, receipts, run cost, quota footer)
 | `schemas/review-findings.schema.json` | Reviewer output shape |
 | `hooks/*.sh`, `hooks/hooks.json`, `hooks/run-band.tsx` | Hook wrappers and the band |
 | `skills/{brainstorm,plan,build,verify,init,onboard,pr-review}/` | The prose |
-| `agents/{v-memory,code-archaeologist,doc-validator,domain-expert,builder,reviewer}.md` | Subagents |
+| `agents/{v-memory,builder,reviewer}.md` | Subagents |
 | `tests/core/`, `tests/hooks/` | Tests |
 
 ## Agents and model policy
 
-- `reviewer` — Opus. The executable reviewer in an isolated checkout.
-- `domain-expert`, `code-archaeologist`, `doc-validator` — Sonnet, turn-capped. The pre-flights.
+- `builder` — Opus, 200 turns. Research, plan and build for one run; takes every fix.
+- `reviewer` — Opus, 25 turns. The sharp executable reviewer in an isolated checkout (a fixed probe
+  list, a skip list, severity floors; round 2 re-checks fixes only).
 - `v-memory` — Haiku, tools `Read, Grep, Glob` only. Read-only search over `docs/compound-v/`.
 
-Opus by default; Sonnet for lookups and mechanical work; **never Haiku** except `v-memory`; Fable only
+Opus for every agent; Sonnet chosen per task at dispatch for mechanical work; **never Haiku** except `v-memory`; Fable only
 by explicit choice. `scripts/lint-frontmatter.py` enforces it.
 
 ## Rules for changes here

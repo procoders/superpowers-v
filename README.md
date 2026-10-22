@@ -2,8 +2,8 @@
 
 A Claude Code plugin that asks before it builds and proves before it says done.
 
-You describe what you want. Compound V asks about it one question at a time, researches the domain,
-writes a plan with an acceptance table, lets Claude Code build it, and then verifies the result with
+You describe what you want. Compound V asks about it one question at a time, then one fresh builder
+researches the domain, writes a plan with an acceptance table and builds it, and then Compound V verifies the result with
 real commands: the project's tests, a real browser, a scope check and a review by a second model in
 an isolated copy. Each check writes a receipt bound to the exact working tree. "Done" means every
 required receipt is current and passing, nothing less.
@@ -18,15 +18,19 @@ the checklists and the proof.
    the data lifecycle (create, change, retire, delete), jurisdiction and deployment, security and
    every form, operations, and edge cases on purpose. Prior decisions in `docs/compound-v/` are looked
    up first. Output: a spec in `docs/compound-v/specs/`, checked by a fresh builder and approved by you.
-2. **Pre-flights**, in parallel. Domain research always (a few searches, each requirement with its
-   source and a check). Code archaeology when the repo already has code. A library audit when the
-   spec brings in dependencies. Output: `docs/compound-v/preflight/`.
-3. **Plan** (`/compound-v:plan`). Tasks with their tests, an **acceptance table** (behaviour → check),
-   four checklists answered item by item (data lifecycle, every page and state, every form and
-   endpoint, operations), and a task → model table.
-4. **Build** (`/compound-v:build`). Native Claude Code: one fresh `builder` subagent by default (it starts from the
-   plan, not from the whole conversation), tests written with the code.
-5. **Verify** (`/compound-v:verify`). The steps below, then one report.
+2. **Build** (`/compound-v:build`). One fresh `builder` subagent, starting from the spec rather than
+   the whole conversation, does everything in its own context: domain research (at most four searches,
+   each requirement with its source and a check), a reading of the code it will touch when the repo
+   has code, a check of any library it adds, then the **plan** (`/compound-v:plan` is its reference:
+   an acceptance table of behaviour → check, the checklists answered item by item, tasks with their
+   tests), and then the code with its tests, including a real-browser test for web projects. Every
+   later fix goes back to that same builder.
+3. **Verify** (`/compound-v:verify`). The steps below, then one report.
+
+Earlier v4 drafts ran separate pre-flight agents, a plan written in the main conversation and a
+separate builder. In the benchmark that cost more than the light flow and did not beat it, while one
+agent doing research, plan and build from the same spec matched the best light-flow build (see
+V4-RESULTS in the benchmark kit). So there is one builder now.
 
 Small changes (a typo, copy, a config value) skip straight to verify as a **light** run. You do not
 have to call any of this by name: in a set-up project a hook reads each plain request and points
@@ -61,7 +65,7 @@ for web projects' browser checks (the project's dependency, not the plugin's).
 | tests | The project's own test command |
 | live | A real browser submits real forms and checks the stored result (Playwright); for non-web projects the binary or API runs its main flows |
 | scope | The run's diff against the files the plan declared |
-| review | A second model reviews an isolated copy of the tree against your original request and the acceptance table, runs things, and reports structured findings. At most two rounds, so one fix round |
+| review | A second model reviews an isolated copy of the tree against your original request and the acceptance table. It runs a fixed list of probes that found real defects before (boundary times, "same rules as X" rule by rule, HEAD/GET on state-changing routes, fake volume, session replay, production start with example values, erasure, normalisers), skips the categories that were noise, and has a turn budget. Round 2 only re-checks the round-1 fixes, so at most one fix round |
 
 Each step writes a signed receipt bound to the working tree. Edit a file afterwards and the receipt is
 stale. A run ends in exactly one outcome:
@@ -89,8 +93,8 @@ earlier receipts are cleared.
 
 ## Parallel lanes
 
-One `builder` subagent builds by default. When the plan has large, independent tasks that write disjoint files, it
-can declare **lanes**: each task gets exclusive file globs and runs as a native Claude Code subagent
+The builder builds alone by default. When the plan has large, independent tasks that write disjoint files, it
+can declare **lanes** (and use the Workflow tool only when you said yes to parallel work in the brainstorm): each task gets exclusive file globs and runs as a native Claude Code subagent
 in its own worktree. Nothing merges on trust: `compound-v.py lane finish` checks that the lane stayed
 in its globs, merges it, and runs the tests on the merged tree, or refuses with the reason (outside the
 lane, interrupted worker, conflict, failing tests, dirty main tree). In the salon brownfield run, v3's

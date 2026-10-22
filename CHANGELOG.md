@@ -8,8 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [4.0.0] — 2026-10-23
 
-Compound V is now a standalone plugin, `compound-v`. Its cycle is brainstorm → pre-flights → plan →
-native build → verification with tree-bound receipts, and Claude Code does the orchestration. The
+Compound V is now a standalone plugin, `compound-v`. Its cycle is brainstorm → build (one builder
+researches, plans and codes) → verification with tree-bound receipts, and Claude Code does the orchestration. The
 salon experiments on 3.9.1 ([docs/v4/salon-report.md](docs/v4/salon-report.md)) showed the light flow
 beating the full v3 pipeline on every blind judgement at about a tenth of the cost. The component-by-component
 reasoning is in [docs/v4/transition.md](docs/v4/transition.md). Nothing about v4 itself is measured yet:
@@ -58,9 +58,29 @@ the acceptance benchmark runs before release.
 - **The band** shows the cycle stage, receipt marks and run cost from the run record.
 - **Parallel lanes** through native worktree subagents, merged by `lane finish` only after scope,
   merge and tests pass.
-- **Agents** `reviewer` (Opus) and `v-memory` (Haiku, read-only: the one exception to never-Haiku).
-- `/compound-v:init` writes `worktree.baseRef: head` and a deny rule for run records, and offers to
-  disable Superpowers in the project.
+- **Agents** `builder` (Opus), `reviewer` (Opus) and `v-memory` (Haiku, read-only: the one exception to never-Haiku).
+- `/compound-v:init` writes `worktree.baseRef: head`, derives `live_cmd` for web projects, and offers
+  to disable Superpowers in the project.
+
+### Changed — the L1 scheme (after the v4 benchmark)
+
+- **Pre-flight agents folded into the builder.** `code-archaeologist`, `doc-validator` and
+  `domain-expert` are gone. After the spec is approved, one fresh `builder` does the domain research
+  (at most four searches), the code reading and the library check itself, writes the plan with the
+  `plan` skill as its reference, attaches it, and builds. Every fix goes back to that same builder.
+  Why: in the benchmark, separate pre-flight agents, a plan written in the main conversation, a
+  separate builder and a broad reviewer cost more than the light flow and did not beat it, while one
+  agent doing research, plan and build from the same spec matched the best light-flow build (see
+  V4-RESULTS in the benchmark kit, and spec §4.2–4.4).
+- **A sharp reviewer.** The review prompt runs a fixed list of probes that found real defects, in
+  yield order, batched into probe scripts; it skips the categories that were noise; it sets severity
+  floors (a state change via HEAD/GET is a blocker, a normaliser that rewrites a valid value is at
+  least high, a session that survives logout, rotation or expiry is at least medium). Round 1 has a
+  turn budget (`reviewer` `maxTurns: 25`); round 2 only re-checks round-1 fixes. Source:
+  `docs/compound-v/preflight/2026-10-22-v4-reviewer-yield.md` §E.
+- **Parallel work needs a yes.** The brainstorm asks once before parallel work on thorough or large
+  jobs and records `Parallel:` in the spec; the builder uses the Workflow tool only on
+  `Parallel: yes (owner)`.
 
 ### Migration
 

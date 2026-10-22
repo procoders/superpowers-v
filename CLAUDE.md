@@ -2,10 +2,10 @@
 
 ## Claude Code
 
-- This repository is built with Compound V 4 itself: brainstorm → pre-flights → plan → build →
-  verify, with run records in `docs/compound-v/runs/`. Load the plugin from this checkout with
+- This repository is built with Compound V 4 itself: brainstorm → build (one builder researches,
+  plans and codes) → verify, with run records in `docs/compound-v/runs/`. Load the plugin from this checkout with
   `claude --plugin-dir .`, or run `/compound-v:init` once if it is installed.
-- Model policy: Opus by default, Sonnet for lookups and mechanical tasks, never Haiku except the
+- Model policy: Opus by default, Sonnet for mechanical tasks chosen at dispatch, never Haiku except the
   read-only `v-memory` agent, Fable only by explicit choice. `scripts/lint-frontmatter.py` enforces it.
 - Where things are: the CLI in `scripts/compound-v.py` + `scripts/cvcore/`, hooks in `hooks/`, the
   cycle prose in `skills/`, subagents in `agents/`, design and plan in `docs/compound-v/`, the
