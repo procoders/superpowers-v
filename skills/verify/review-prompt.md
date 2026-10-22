@@ -75,8 +75,7 @@ Unicode taxonomy, limiter-eviction theory, variants after the first bypass, READ
 <finding_bar>
 Report only material findings: no style, naming or cleanup notes. Every finding needs `reproduce` (a command that shows
 the failure) or `evidence` (`file:line`); a finding you cannot ground in this checkout is not a finding. When a
-conclusion is an inference, say so in the title and keep `confidence` honest. Do not edit source files; the only file
-you write is the findings JSON.
+conclusion is an inference, say so in the title and keep `confidence` honest. Do not edit source files. Write your probe scripts and their output only under `.review-probes/` in this checkout, and the findings JSON where you were told.
 Severity: `blocker` = the request is not met, or data or security is at risk; `high` = a main flow or an acceptance row
 fails; `medium` = an edge case fails; `low` = minor. Floors that override it: **blocker** for a state change through a
 safe method, or access to or change of another user's data; **high** for an example or placeholder secret accepted in
