@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import escalate, receipts, review, run, scope, snapshot
+from . import escalate, hud, receipts, review, run, scope, snapshot, usage
 from .gitio import GitError, repo_root
 
 
@@ -104,6 +104,23 @@ def cmd_status(a, repo):
     return STATUS_RC[s["outcome"]]
 
 
+def cmd_usage(a, repo):
+    rec = usage.record(repo, _pick(repo, a), a.session, a.transcript)
+    _out({"usage": rec.get("usage"), "usage_by_stage": rec.get("usage_by_stage"),
+          "run_cost_usd": usage.run_cost(rec)})
+
+
+def cmd_hud(a, repo):
+    if a.brief:
+        print(hud.brief(repo, a.session))
+    else:
+        _out(hud.band(repo, a.session))
+
+
+def cmd_cochange(a, repo):
+    _out(hud.cochange(repo, a.path, max_commits=a.max_commits, top=a.top))
+
+
 def parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--repo", default=".")
@@ -160,6 +177,19 @@ def parser() -> argparse.ArgumentParser:
     wv.add_argument("--reason", required=True)
     wv.set_defaults(fn=cmd_waive)
     sub.add_parser("status", parents=[withid]).set_defaults(fn=cmd_status)
+    us = sub.add_parser("usage", parents=[withid])
+    us.add_argument("--session", required=True)
+    us.add_argument("--transcript", required=True)
+    us.set_defaults(fn=cmd_usage)
+    hd = sub.add_parser("hud", parents=[common])
+    hd.add_argument("--brief", action="store_true")
+    hd.add_argument("--session")
+    hd.set_defaults(fn=cmd_hud)
+    cc = sub.add_parser("cochange", parents=[common])
+    cc.add_argument("--path", action="append", required=True)
+    cc.add_argument("--max-commits", type=int, default=500)
+    cc.add_argument("--top", type=int, default=10)
+    cc.set_defaults(fn=cmd_cochange)
     return p
 
 

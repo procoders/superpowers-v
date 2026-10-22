@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 import re
 import tempfile
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
+from . import run
 from .receipts import execute
 from .snapshot import materialize, tree
 
@@ -87,7 +90,7 @@ def _codex(cwd, out_path: Path, prompt_text: str, sandbox: str, model, timeout_s
                 "--ephemeral", "--output-schema", str(SCHEMA), "-o", str(out_path)]
         if sandbox == "workspace-write":
             argv += ["-c", "sandbox_workspace_write.network_access=false"]
-        rc, tail, dur = execute(argv + ["-m", model, "-"], cwd, timeout_s, stdin_file=pf)
+        rc, tail, _ = execute(argv + ["-m", model, "-"], cwd, timeout_s, stdin_file=pf)
     if rc != 0:
         raise ReviewError(f"codex exited {rc}: {tail.splitlines()[-1] if tail else ''}")
     try:
@@ -96,22 +99,26 @@ def _codex(cwd, out_path: Path, prompt_text: str, sandbox: str, model, timeout_s
         raise ReviewError(f"codex output is not JSON: {e}") from None
     if not isinstance(data, dict):
         raise ReviewError("codex output is not a JSON object")
-    data["_duration_s"] = dur
     return data
 
 
 def codex(repo, rec, out_path, *, model=MODEL, timeout_s=1200) -> Path:
-    tid = tree(repo)
-    with tempfile.TemporaryDirectory(prefix="cv-review-") as tmp:
-        dest = Path(tmp) / "checkout"
-        materialize(repo, tid, dest)
-        if rec.get("setup_cmd"):
-            rc, tail, _ = execute(rec["setup_cmd"], dest, timeout_s)
-            if rc != 0:
-                raise ReviewError(f"setup_cmd exited {rc}: {tail[-300:]}")
-        data = _codex(dest, out_path, prompt(repo, rec, tid), "workspace-write", model,
-                      timeout_s)
-    data.pop("_duration_s", None)
+    tid, t0 = tree(repo), time.monotonic()
+    try:
+        with tempfile.TemporaryDirectory(prefix="cv-review-") as tmp:
+            dest = Path(tmp) / "checkout"
+            materialize(repo, tid, dest)
+            if rec.get("setup_cmd"):
+                rc, tail, _ = execute(rec["setup_cmd"], dest, timeout_s)
+                if rc != 0:
+                    raise ReviewError(f"setup_cmd exited {rc}: {tail[-300:]}")
+            data = _codex(dest, out_path, prompt(repo, rec, tid), "workspace-write", model,
+                          timeout_s)
+    finally:
+        rec.setdefault("external", {}).setdefault("codex", []).append({
+            "duration_s": round(time.monotonic() - t0, 3),
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+        run.save(repo, rec)
     data["snapshot"] = tid
     Path(out_path).write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
                               encoding="utf-8")

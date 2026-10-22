@@ -46,6 +46,11 @@ def commit_all(repo, msg="change"):
     sh(repo, "commit", "-q", "--allow-empty", "-m", msg)
 
 
-def cli(repo, *args, stdin=None):
+def key_path(repo) -> Path:
+    return Path(repo).parent / "home/.claude/compound-v/receipt.key"
+
+
+def cli(repo, *args, stdin=None, env=None):
+    full = dict(os.environ, HOME=str(Path(repo).parent / "home"), **(env or {}))
     return subprocess.run([sys.executable, str(SCRIPTS / "compound-v.py"), *args],
-                          cwd=str(repo), capture_output=True, text=True, input=stdin)
+                          cwd=str(repo), capture_output=True, text=True, input=stdin, env=full)

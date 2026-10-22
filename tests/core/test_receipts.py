@@ -38,10 +38,10 @@ class Base(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
         self._key = receipts.KEY_PATH
-        receipts.KEY_PATH = self.tmp / "home/receipt.key"
         self.repo = helpers.make_repo(self.tmp, {
             "src/a.js": "export const a = 1\n", "tests/test_a.py": "t\n",
             ".gitignore": "live.rc\n.env\n"})
+        receipts.KEY_PATH = helpers.key_path(self.repo)
         helpers.write(self.repo, {"live.rc": "0", "docs/compound-v/plans/p.md": plan_text()})
         self.rec = run.start(self.repo, tier=self.tier, request="add a booking page")
         if self.tier == "full":
@@ -190,25 +190,16 @@ class ReceiptsTest(Base):
         self.assertEqual(["tests", "review", "live", "scope"], s["stale"])
 
     def test_cli_status_exit_codes(self):
-        home = {"HOME": str(self.tmp / "clihome")}
-        import os
-        import subprocess
-        env = dict(os.environ, **home)
-        cmd = [sys.executable, str(helpers.SCRIPTS / "compound-v.py")]
-        r = subprocess.run(cmd + ["status"], cwd=self.repo, env=env, capture_output=True,
-                           text=True)
+        r = helpers.cli(self.repo, "status")
         self.assertEqual(3, r.returncode, r.stderr)
         for step in ("tests", "live", "scope"):
-            r = subprocess.run(cmd + ["receipt", step], cwd=self.repo, env=env,
-                               capture_output=True, text=True)
+            r = helpers.cli(self.repo, "receipt", step)
             self.assertEqual(0, r.returncode, r.stderr)
-        self.assertTrue((self.tmp / "clihome/.claude/compound-v/receipt.key").is_file())
-        r = subprocess.run(cmd + ["status"], cwd=self.repo, env=env, capture_output=True,
-                           text=True)
+        self.assertTrue(helpers.key_path(self.repo).is_file())
+        r = helpers.cli(self.repo, "status")
         self.assertEqual(["review"], json.loads(r.stdout)["missing"])
-        r = subprocess.run(cmd + ["waive", "live", "--reason", "no browser", "--id",
-                                  self.rec["id"]], cwd=self.repo, env=env,
-                           capture_output=True, text=True)
+        r = helpers.cli(self.repo, "waive", "live", "--reason", "no browser", "--id",
+                        self.rec["id"])
         self.assertEqual(0, r.returncode, r.stderr)
 
 

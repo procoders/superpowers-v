@@ -16,6 +16,7 @@ from .escalate import classify_diff
 from .run import RunError
 from .scope import check
 from .snapshot import ignored_env_digest, tree
+from .usage import run_cost
 
 KEY_PATH = Path.home() / ".claude/compound-v/receipt.key"
 STEPS = ("tests", "review", "live", "scope")
@@ -190,7 +191,12 @@ def waive(repo, rec, step, reason: str) -> dict:
 
 
 def budget(rec) -> dict:
-    return {"limit": rec.get("budget_usd"), "spent": None, "exceeded": False}
+    limit, spent = rec.get("budget_usd"), run_cost(rec)
+    split, by = rec.get("budget_split") or run.BUDGET_SPLIT, rec.get("usage_by_stage") or {}
+    over = [s for s, v in sorted(by.items()) if limit and s in split and v > split[s] * limit]
+    return {"limit": limit, "spent": spent, "known": spent is not None,
+            "exceeded": spent is not None and bool(limit) and spent > limit,
+            "by_stage": by, "stage_exceeded": over}
 
 
 def status(repo, rec) -> dict:
