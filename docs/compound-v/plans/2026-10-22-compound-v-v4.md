@@ -16,7 +16,7 @@
 - Python stdlib only, 3.9 floor; hooks in bash with `"shell": "bash"`. Every hook is registered `"<script>" || true`, has `timeout` ≤ 10 s, starts with `trap 'exit 0' EXIT`, and prints a decision only on success.
 - Mutable state lives only in `docs/compound-v/` (project) or `~/.claude/compound-v/` (machine), never under `${CLAUDE_PLUGIN_ROOT}`.
 - Enforcement fields (receipts, outcomes, scope verdicts, usage) are written by `scripts/compound-v.py` from real command results, never by the model.
-- No unmeasured numbers in docs or output; dollar figures only from a dated price table.
+- No unmeasured numbers in docs or output; dollar figures only from the CLI's own cost record (`cost-state` / `total_cost_usd`), labelled as the CLI's estimate.
 - No personal data in logs. Command output tails stored in receipts are capped at 20 lines.
 - Skills, not `commands/`: `skills/<name>/SKILL.md` gives `/compound-v:<name>`.
 - New core size: `scripts/compound-v.py` + `scripts/cvcore/*.py` + `hooks/*.sh` + `hooks/run-band.tsx` ≤ 2500 lines (CI guard; target ~2k).
@@ -27,7 +27,7 @@
 
 1. **Two Claude sessions or two open runs in one repo.** The hooks must act on the run bound to *this* session (`sessions` list), not on the newest file. Tests are in Task 2 (`test_active_prefers_session_binding`) and Task 7 (`test_stop_ignores_other_sessions_run`).
 2. **Not a git repo, no first commit, detached HEAD.** Every hook must exit 0 silently, and the CLI must exit 2 with one plain line. Tests are in Task 1 (`test_snapshot_requires_commit`) and Task 7 (`test_hooks_silent_outside_git`).
-3. **Large transcripts or repos.** The Stop hook must return within its budget and mark usage `partial` rather than hang. Tests are in Task 5 (`test_measure_respects_deadline`) and Task 7 (`test_stop_hook_under_budget_with_big_transcript`).
+3. **Large transcripts or repos.** The Stop hook must return within its budget; the cost read is a bounded backwards tail scan that gives up (cost unknown) rather than hang. Tests are in Task 5 (`test_last_cost_state_tail_bound`) and Task 7 (`test_stop_hook_under_budget_with_big_transcript`).
 4. **Paths with spaces, non-ASCII names (Bangla) or newlines.** The snapshot, scope check and checkout must agree on them, and a newline path is never exempt. Tests are in Task 1 (`test_snapshot_unicode_and_space_paths`) and Task 3 (`test_scope_unicode_paths`).
 5. **A verified, closed run followed by manual edits.** Later stops must never be refused, and a new request starts a new run. The test is in Task 7 (`test_stop_after_done_never_blocks`).
 
@@ -45,12 +45,11 @@
 | `scripts/cvcore/escalate.py` | Diff content predicates → tier; prompt classifier |
 | `scripts/cvcore/receipts.py` | Step runner, HMAC-signed receipts, waivers, review recording, status |
 | `scripts/cvcore/review.py` | Codex executable review runner |
-| `scripts/cvcore/usage.py` | Transcript token measurement, price table, cost |
-| `scripts/cvcore/lanes.py` | Parallel writer worktrees: start / finish (scope + merge + tests) |
+| `scripts/cvcore/usage.py` | Run cost from the CLI's `cost-state` transcript entries |
+| `scripts/cvcore/lanes.py` | Lane gate for native worktree writers: scope + merge + tests |
 | `scripts/cvcore/hud.py` | Band JSON, one-line brief, co-change lookup |
 | `scripts/cvcore/hooks.py` | `stop_hook(payload)`, `prompt_hook(payload)`, `guard_hook(payload)` decisions |
 | `scripts/cvcore/cli.py` | argparse wiring of all subcommands |
-| `scripts/prices.json` | `{source, checked, models: {id: {input, cache_write, cache_read, output}}}` USD per Mtok |
 | `schemas/review-findings.schema.json` | Reviewer output shape (Codex `--output-schema` and Claude reviewer) |
 | `hooks/{prompt,stop,session,guard}.sh`, `hooks/hooks.json`, `hooks/run-band.tsx` | Thin hook wrappers and the band |
 | `skills/{brainstorm,plan,build,verify,init,onboard,pr-review}/` | The prose |
@@ -194,60 +193,61 @@ Carried as-is: `scripts/compound-v-run-with-timeout.py`, `scripts/lint-frontmatt
   - `test_codex_failure_is_error` (`test_review.py`): with a fake `codex` on `PATH` that writes a valid-looking file and exits 124, `review.codex` raises `ReviewError`.
   - `test_codex_checkout_has_untracked` (`test_review.py`): a fake `codex` that lists `-C` into the out file includes the untracked `src/new.js`.
 - [ ] **Step 2:** Run. Expected: FAIL.
-- [ ] **Step 3:** Implement. Write `review-prompt.md` with the slots `{request}`, `{acceptance}`, `{checklists}`, `{snapshot}` and `{setup_cmd}`. It says: judge against the original request, not the plan; run the app and the tests; every finding needs `reproduce` (a command) or `evidence` (file:line); do not edit source files; write only the findings JSON.
+- [ ] **Step 3:** Implement. Write `review-prompt.md` with the slots `{request}`, `{acceptance}`, `{checklists}`, `{snapshot}` and `{setup_cmd}`. Borrow the codex plugin's adversarial stance (`codex/1.0.4/prompts/adversarial-review.md`: try to break confidence in the change, do not validate it) and its finding fields (file, line range, confidence, recommendation) — add `file`, `line_start`, `line_end`, `confidence`, `recommendation` to each finding in the schema. Round 2 gets a re-review framing (check each round-1 finding first, then look for regressions). It says: judge against the original request, not the plan; run the app and the tests; every finding needs `reproduce` (a command) or `evidence` (file:line); do not edit source files; write only the findings JSON.
 - [ ] **Step 4:** Rerun. Expected: 13 OK.
 - [ ] **Step 5:** Commit: `feat(core): signed tree-bound receipts, bounded review, outcomes`.
 
-### Task 5: Usage, prices, HUD, co-change
+### Task 5: Usage from the CLI's own cost record, HUD, co-change
 
-**Files:** Create `scripts/cvcore/usage.py`, `scripts/cvcore/hud.py`, `scripts/prices.json`; CLI `usage`, `hud [--brief]`, `cochange --path P...`. Test: `tests/core/test_usage.py`, `tests/core/test_hud.py`.
+Native first (`docs/compound-v/preflight/2026-10-22-v4-native-overlap.md` row 2): the CLI already writes cumulative per-session cost (subagents included) to the transcript as `{"type":"cost-state","totalCostUSD":…,"modelUsage":{model:{…,"costUSD":…}},"hasUnknownModelCost"?:…}` lines, and `-p` prints `total_cost_usd`. We read that; we do not price tokens ourselves.
+
+**Files:** Create `scripts/cvcore/usage.py`, `scripts/cvcore/hud.py`; CLI `usage`, `hud [--brief]`, `cochange --path P...`. Test: `tests/core/test_usage.py`, `tests/core/test_hud.py`.
 
 **Interfaces — Produces:**
-- `usage.transcripts_for(main: Path) -> list[Path]` returns `[main] + sorted(main.parent / main.stem / "subagents" / "*.jsonl")`, following the salon `session-usage.py` method.
-- `usage.measure(paths, deadline: float) -> {"per_model": {model: {"input", "cache_write", "cache_read", "output"}}, "messages": n, "partial": bool}`. It counts each assistant `message.id` once across files and skips `<synthetic>` and lines without `usage`. Past the deadline it sets `partial: true` and returns what it has.
-- `usage.cost_usd(per_model, prices) -> float|None`. Returns None if any model with tokens has no price.
-- `usage.record(repo, rec, session_id, transcript_path, deadline) -> dict` stores `rec["usage"][session_id]` and the run total, and adds the delta since the last record to `rec["usage_by_stage"][<stage>]` (`brainstorm`, `preflight` and `plan` count as `before_build`). `receipts.status()["budget"]` gains `{"by_stage": {...}, "stage_exceeded": [stage]}`: a stage over `budget_split[stage] × budget_usd` is listed, and a run total over `budget_usd` makes the outcome incomplete. With no price, `spent` is null and the budget is reported as "unknown", never as passed.
-- `review.codex` also appends `{duration_s, at}` to `rec["external"]["codex"]`. Codex is recorded, not counted in the Claude budget. `prices.json` is filled from the official Anthropic pricing page with `source` and `checked`; a model whose price is not on that page is left out. **Do not type a price from memory.**
-- `hud.band(repo, session_id=None) -> dict` returns `{run, stage, tier, steps: {step: "pass"|"fail"|"stale"|"missing"|"waived"}, review_round, outcome, tokens, cost_usd}`, or `{}` with no active run.
-- `hud.brief(repo, session_id=None) -> str`, for example `Compound V run 20261022-…-salon: stage verify (full); missing review, live; next: /compound-v:verify`, or `""`.
-- `hud.cochange(repo, paths, max_commits=500, top=10) -> list[{"path", "count"}]` comes from `git log --name-only -z -n max_commits`.
+- `usage.last_cost_state(transcript: Path, max_tail_bytes=8_000_000) -> dict|None` — scans the file **backwards** in blocks for the last line containing `"type":"cost-state"` (bounded by `max_tail_bytes`), returns `{"session", "total_usd", "per_model": {model: costUSD}, "unknown_cost": bool}` or None. Any parse error → None (format is undocumented; fail open).
+- `usage.record(repo, rec, session_id, transcript_path) -> dict` — on first sight of a session stores `rec["usage"][session_id] = {"start_usd": total, "last_usd": total}`; afterwards updates `last_usd` and adds `last_usd - previous` to `rec["usage_by_stage"][<stage>]` (`brainstorm`/`preflight`/`plan` count as `before_build`). Run cost = Σ over sessions of `last_usd - start_usd`. Cost before the run started in that session is never charged to the run.
+- `usage.run_cost(rec) -> float|None` — None when no session has a cost-state or any has `unknown_cost`.
+- `receipts.status()["budget"]` = `{"limit": budget_usd, "spent": run_cost|None, "exceeded": bool, "by_stage": {...}, "stage_exceeded": [stage]}`; a stage over `budget_split[stage] × budget_usd` is listed; total over budget → outcome incomplete; spent None → reported "unknown", never as passed.
+- `review.codex` appends `{duration_s, at}` to `rec["external"]["codex"]` (recorded, not in the Claude budget).
+- `hud.band(repo, session_id=None) -> dict` — `{run, stage, tier, steps: {step: "pass"|"fail"|"stale"|"missing"|"waived"}, review_round, outcome, cost_usd}`, `{}` without an active run.
+- `hud.brief(repo, session_id=None) -> str` — e.g. `Compound V run 20261022-…-salon: stage verify (full); missing review, live; next: /compound-v:verify`, or `""`.
+- `hud.cochange(repo, paths, max_commits=500, top=10) -> list[{"path", "count"}]` from `git log --name-only -z -n max_commits`.
 
 - [ ] **Step 1: Write the failing tests:**
-  - `test_measure_dedupes_across_files`: the same `message.id` in the main and subagent files is counted once.
-  - `test_measure_skips_synthetic`.
-  - `test_measure_respects_deadline`: a 200k-line file with `deadline = now` gives `partial == True` within 1 s.
-  - `test_cost_none_when_price_missing`.
-  - `test_usage_by_stage_and_budget`: records at stage `plan` then `build` split the deltas; build spend over 0.45 × budget lists `build` in `stage_exceeded`; total over budget → status outcome `incomplete`.
+  - `test_last_cost_state_reads_newest` — three cost-state lines interleaved with 50k other lines → the last one's `total_usd`.
+  - `test_last_cost_state_bad_json_none`.
+  - `test_last_cost_state_tail_bound` — a 20 MB file whose only cost-state is at the start, `max_tail_bytes=1_000_000` → None, returns within 1 s.
+  - `test_run_cost_excludes_pre_run_spend` — session at $3.00 when the run starts, later $5.50 → run cost 2.50.
+  - `test_usage_by_stage_and_budget` — records at stage `plan` then `build` split the deltas; build over 0.45 × budget lists `build` in `stage_exceeded`; total over budget → status outcome `incomplete`.
+  - `test_unknown_cost_reports_unknown` — `hasUnknownModelCost: true` → `run_cost` None, budget `spent` None, `exceeded` False.
   - `test_brief_names_missing_steps`.
   - `test_band_empty_without_run`.
-  - `test_cochange_counts`: three commits touching `a` and `b` together give `cochange([a])[0] == {"path": "b", "count": 3}`.
-- [ ] **Step 2:** Run. Expected: FAIL.
-- [ ] **Step 3:** Implement. Fetch the pricing page (WebFetch), fill `prices.json` for the models it lists, and record its URL and today's date.
-- [ ] **Step 4:** Rerun. Expected: 7 OK.
-- [ ] **Step 5:** Commit: `feat(core): transcript usage with dated prices, hud and co-change`.
-
-### Task 6: Lanes for parallel writers
-
-**Files:** Create `scripts/cvcore/lanes.py`; CLI `lane start --task T`, `lane finish --task T`. Test: `tests/core/test_lanes.py`.
-
-**Interfaces — Consumes:** `run.*`, `scope.check`, and the run's `test_cmd`. **Produces:**
-- `lanes.start(repo, rec, task) -> Path`. It requires `task in rec["lanes"]` and runs `git worktree add -b cv/<run>/<task> .claude/worktrees/cv-<run>-<task> HEAD`. Starting from the current HEAD is deliberate: the native `isolation: worktree` branches from the default branch. It records `rec["lane_state"][task] = {base, path, status: "open"}` and returns the path.
-- `lanes.finish(repo, rec, task) -> {"status": "merged"|"refused", "reason": str, "violations": [...]}`. It refuses, without touching the main tree:
-  - when the worktree is dirty (`interrupted: uncommitted changes`) or has no commits beyond base (`no commits`);
-  - when `scope.check(base, lanes[task])` inside the worktree is blocked.
-  Otherwise it runs `git merge --no-ff --no-commit cv/<run>/<task>`. On a conflict it runs `git merge --abort` and refuses with `conflict`. It then runs `test_cmd` on the merged tree: on failure, `git merge --abort` and refuse with `tests failed`; on success it commits `merge lane <task>`. Never `reset --hard`.
-
-- [ ] **Step 1: Write the failing tests:**
-  - `test_lane_from_head`: an uncommitted-free HEAD on a feature branch (not main) is the base of the new worktree.
-  - `test_write_outside_lane_refused`: lane `src/a/**` committing `src/b/x.js` is `refused` with violations `["src/b/x.js"]`, and main's HEAD is unchanged.
-  - `test_interrupted_worker_refused`: a dirty worktree is refused (`interrupted`).
-  - `test_tests_fail_aborts_merge`: `test_cmd = "false"` is refused (`tests failed`), and `git status --porcelain` on main is empty.
-  - `test_clean_lane_merges`.
-  - `test_dirty_main_refused`: uncommitted user changes in the main tree give `refused` (`main tree dirty`), with the user's changes untouched.
+  - `test_cochange_counts` — three commits touching `a` and `b` together → `cochange([a])[0] == {"path": "b", "count": 3}`.
 - [ ] **Step 2:** Run. Expected: FAIL.
 - [ ] **Step 3:** Implement.
-- [ ] **Step 4:** Rerun. Expected: 5 OK.
-- [ ] **Step 5:** Commit: `feat(core): lane worktrees from HEAD with scope, merge and test gate`.
+- [ ] **Step 4:** Rerun. Expected: 9 OK.
+- [ ] **Step 5:** Commit: `feat(core): run cost from the CLI's cost-state, hud and co-change`.
+
+### Task 6: Lane gate for native worktree writers
+
+Native first (native-overlap row 4): parallel writers are native subagents with `isolation: worktree`; `/compound-v:init` writes `"worktree": {"baseRef": "head"}` to the project `.claude/settings.json` so they branch from the current HEAD (a plugin cannot ship that setting). We do not create worktrees. What native lacks — per-lane globs, a refused merge, tests on the merged tree — is this task.
+
+**Files:** Create `scripts/cvcore/lanes.py`; CLI `lane finish --task T --branch B`. Test: `tests/core/test_lanes.py` (tests create the worktree with `git worktree add -b <branch> <path> HEAD`, standing in for the native one).
+
+**Interfaces — Consumes:** `run.*`, `scope.check`, the run's `test_cmd`. **Produces:**
+- `lanes.finish(repo, rec, task, branch) -> {"status": "merged"|"refused", "reason": str, "violations": [...]}` — requires `task in rec["lanes"]`; base = `git merge-base HEAD <branch>`. Refuses without touching the main tree when: the main tree has uncommitted changes outside `docs/compound-v/` (`main tree dirty`); the branch's worktree (found via `git worktree list --porcelain`) is dirty (`interrupted: uncommitted changes`); the branch has no commits beyond base (`no commits`); `scope.check` of the branch's diff against base vs `lanes[task]` is blocked. Otherwise `git merge --no-ff --no-commit <branch>`; conflict → `git merge --abort`, refuse `conflict`; then `test_cmd` on the merged tree; failure → `git merge --abort`, refuse `tests failed`; success → commit `merge lane <task>`, record `rec["lane_state"][task] = {branch, base, status: "merged"}`. Never `reset --hard`.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `test_write_outside_lane_refused` — lane `src/a/**`, branch commits `src/b/x.js` → `refused`, violations `["src/b/x.js"]`, main HEAD unchanged.
+  - `test_interrupted_worker_refused` — dirty worktree → `refused` (`interrupted`).
+  - `test_no_commits_refused`.
+  - `test_tests_fail_aborts_merge` — `test_cmd = "false"` → `refused` (`tests failed`), `git status --porcelain` on main empty.
+  - `test_dirty_main_refused` — uncommitted user changes in main → `refused` (`main tree dirty`), changes untouched.
+  - `test_clean_lane_merges`.
+- [ ] **Step 2:** Run. Expected: FAIL.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** Rerun. Expected: 6 OK.
+- [ ] **Step 5:** Commit: `feat(core): lane gate — scope, merge and tests for native worktree writers`.
 
 ### Task 7: Hooks
 
@@ -257,7 +257,7 @@ Carried as-is: `scripts/compound-v-run-with-timeout.py`, `scripts/lint-frontmatt
 - `hooks.stop_hook(payload: dict, repo: Path, budget_s=6.0) -> dict|None`:
   1. If `hook_event_name != "Stop"` → None.
   2. Find `rec = run.active(repo, session_id)`. If it is None: when `state_dir/change-<session>` exists (set by `prompt_hook`) and no `bypass-refused-<session>` marker exists yet, write that marker and block with "This session got a change request but no Compound V run was started. Start one with the compound-v skills, or say that no files changed and stop again." Otherwise return None.
-  3. Bind the session, then `usage.record` with the remaining budget.
+  3. Bind the session, then `usage.record(repo, rec, session_id, transcript_path)`.
   4. `stop_hook_active` true → None.
   5. Stage not in (`build`, `verify`) → None.
   6. `s = status(...)`. Verified → set `outcome = "verified"`, `stage = "done"`, save, None.
@@ -281,7 +281,7 @@ Carried as-is: `scripts/compound-v-run-with-timeout.py`, `scripts/lint-frontmatt
   - `test_stop_after_done_never_blocks`: a verified, done run plus an edit plus a stop gives None.
   - `test_stop_ignores_other_sessions_run`.
   - `test_stop_brainstorm_stage_never_blocks`.
-  - `test_stop_hook_under_budget_with_big_transcript`: a 200k-line transcript returns within 7 s.
+  - `test_stop_hook_under_budget_with_big_transcript`: a 20 MB transcript returns within 7 s.
   - `test_stop_blocks_once_when_change_request_but_no_run`: `prompt_hook("add a booking page")` with no run, then a stop, blocks once; the second stop gives None.
   - `test_prompt_binds_unbound_run`: a run started without a session gets the payload's `session_id` on the next prompt.
   - `test_triage_log_has_no_prompt_text`.
@@ -318,6 +318,7 @@ Content decisions, each one a requirement for the prose:
   - For work bigger than a small change, ask "how deep" (quick / standard / thorough). Depth adds pre-flights and checks and never removes the tier minimum.
   - Before the first question, dispatch `compound-v:v-memory` (Sonnet, read-only) over `docs/compound-v/` and show its hits as evidence.
   - Write `docs/compound-v/specs/YYYY-MM-DD-<topic>.md`, run `compound-v.py run start --tier full --request-file <tmp with the user's original words> --spec <path>`, and get the user's approval of the spec before going on.
+  - Before asking for approval, run a builder check: a fresh subagent reads the spec as the builder would and lists the questions it still needs answered; settle the minor ones, bring only the owner's to the user in one message.
   - Then `run stage --to preflight` and dispatch, in one message: domain-expert always (≤ 4 searches); code-archaeologist when `git ls-files` has source outside `docs/`, `.claude/` and images; doc-validator when the spec names a dependency. Each writes `docs/compound-v/preflight/<date>-<topic>-<kind>.md`.
 - **plan:**
   - Write `docs/compound-v/plans/<date>-<topic>.md` with `## Acceptance` (rows: behaviour → check), `## Tasks`, `## Task → model`, and `## Lanes` only when parallel. Apply `checklists.md`, answering every item "applies / n.a. + why".
@@ -326,7 +327,7 @@ Content decisions, each one a requirement for the prose:
   - Optional plan review: for a high-stakes plan with Codex installed, offer `compound-v.py review codex-plan --plan <path>`. It is advisory, and its findings are arbitrated in the plan.
 - **build:**
   - One agent by default, with tests written alongside the code (negative paths, state transitions, persisted state, missing config).
-  - Parallel only when the plan has `## Lanes`: for each task, `compound-v.py lane start`, then a native subagent with `model` from the table, working in that path and committing there; then `lane finish`. A refusal is fixed or reported, never forced.
+  - Parallel only when the plan has `## Lanes`: for each task, dispatch a native subagent with `isolation: "worktree"` and the `model` from the table, telling it to stay inside its lane's globs and commit its work; then run `compound-v.py lane finish --task <T> --branch <the branch the subagent result reports>`. A refusal is fixed or reported, never forced.
   - At each task boundary, read the `status` budget. If `build` is in `stage_exceeded`, stop adding scope, finish the current task and go to verify: verification's share is reserved.
   - Then `run stage --to verify` and invoke verify.
 - **verify:**
@@ -334,6 +335,7 @@ Content decisions, each one a requirement for the prose:
   - Review: when `reviewer` = codex, `review codex`. Otherwise run `checkout --dest <tmp>` and dispatch `compound-v:reviewer` (Opus) with that path, `review-prompt.md` filled and the findings path; then `review record`.
   - On a failed first review: `run stage --to build`, fix, re-run tests, live and scope, then do the second review. If the second review still fails, report incomplete with its findings. Never a third review, and never "fixed" without a review.
   - Finish with `status` and report the outcome, the missing/failed steps, waivers and usage. Say "done" only when the outcome is verified.
+  - For runs whose escalation reasons include `auth` or `payments`, also suggest the native `/security-review` to the user (optional, not a receipt).
   - When no browser can run, ask the user whether to waive; only on their yes, `waive live --reason "<their words>"`.
   - A light run with no run record starts one: `run start --tier light --request-file … --change-set <globs of the intended files>`.
 - **agents:** `v-memory` (the V-memory layer: grep + read over `docs/compound-v/`, no index) is `model: haiku`, `tools: Read, Grep, Glob`, `maxTurns: 15`. `code-archaeologist`, `doc-validator` and `domain-expert` are `model: sonnet` with `maxTurns: 25` and no `memory`. `reviewer` is `model: opus` with `maxTurns: 60`; it may run commands but edits nothing outside its checkout and writes only the findings file. Delete each agent's Step 0 V-memory recall and the `superpowers-v` cache lookups.
@@ -361,6 +363,8 @@ Content decisions, each one a requirement for the prose:
   - a browser runner: `npx --no-install playwright --version`, or a Playwright/Chrome DevTools MCP in `claude mcp list`. When none is found, it offers `claude mcp add playwright npx @playwright/mcp@0.0.83 -- --headless` and says Playwright Test will be added per project.
   - Superpowers enabled (`claude plugin list`): if so, it offers `{"enabledPlugins": {"superpowers@claude-plugins-official": false}}` in `.claude/settings.json`.
   - It writes `.claude/compound-v.json` = `{version: 4, stance: "standard"|"cost-aware", default_tier: "full", reviewer, test_cmd (detected from package.json/pyproject/Makefile, confirmed by the user), budget_usd: 7, models: {"build": "opus", "mechanical": "sonnet", "review": "opus"}}`.
+  - Writes to the project `.claude/settings.json` (shown as a diff, confirmed): `"worktree": {"baseRef": "head"}` (native worktree subagents branch from HEAD) and `"permissions": {"deny": ["Edit(docs/compound-v/runs/**)", "Write(docs/compound-v/runs/**)"]}` (native protection of run records; the guard hook is the fallback before init — check the exact deny-rule syntax in the permissions docs first).
+  - Warns when the codex plugin's stop-time review gate is enabled (`~/.claude/plugins/cache/*/codex/*/` config), since two Stop-time reviewers would both fire.
   - Every config write is shown as a diff and confirmed. `models` (old `/v:models`) folds into init; `adr` is not carried into 4.0.
 - **onboard:**
   - Replace the module-load import of `compound-v-memory.py` (`compound-v-onboard.py:6-9`) with local `SECRET_RE`, `PEM_RE` and `file_sha` (copied verbatim from `compound-v-memory.py`).
