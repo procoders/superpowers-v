@@ -38,7 +38,7 @@ Sections, in this order:
 - Each check names a test (or a live step) by the name the build will give it.
 - The CLI hashes the text from `## Acceptance` to the next `## ` heading. Editing it after receipts exist makes them stale. That is intended, so finish the table here.
 
-**`## Checklists`.** A spec call never makes an applicable checklist item n.a.: when a call conflicts with an item (a seed file where D1 needs an operator edit), the item wins and the plan says so. Answer every item of `checklists.md` (R, J, D, P, F, O, T): `F3 applies → A7` or `P4 n.a. — CLI tool, no pages`. No item is skipped.
+**`## Checklists`.** The request outranks the spec's calls: when a call narrows or reinterprets a rule the request states (a boundary read against R2, a "same rules" clause with an exception), the request's reading wins and the plan says so. A spec call never makes an applicable checklist item n.a.: when a call conflicts with an item (a seed file where D1 needs an operator edit), the item wins and the plan says so. Answer every item of `checklists.md` (R, J, D, P, F, O, T): `F3 applies → A7` or `P4 n.a. — CLI tool, no pages`. No item is skipped.
 
 **`## Tasks`.** Size each task as the smallest unit that carries its own test cycle and that a reviewer could reject while approving its neighbour. Fold setup, configuration and docs into the task whose deliverable needs them. Each task lists:
 - files to create or modify (exact paths);

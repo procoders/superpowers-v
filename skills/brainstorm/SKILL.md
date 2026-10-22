@@ -64,6 +64,9 @@ moving parts, not fewer capabilities. A call never removes something the plan's 
 contact details) without a developer; sessions are revoked server-side; erasure reaches every copy). "Keep it simple"
 may decide *how* (a small admin form instead of a CMS) but not *whether*. In our benchmark, builds whose calls
 chose "edit a seed file and restart" for routine business changes lost a fifth of their product score.
+A call also never narrows or reinterprets a rule the request states; it only adds detail where the request is silent.
+"Up to N before" includes exactly N, and "same rules as X" keeps every rule X has (the boundary reading is R2 in the
+plan's `checklists.md`). When you think a stated rule should change, ask the owner once; never decide it as your call.
 
 ## 5. Write the spec
 

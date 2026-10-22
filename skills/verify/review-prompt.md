@@ -38,6 +38,8 @@ Budget: at most 20 turns. Run them in this order:
 0. Completeness, by reading only (at most 2 turns): map every requirement in the request, every owner decision and every
    builder call in the spec (`docs/compound-v/specs/` in this checkout) to an acceptance row and a check. A requirement
    with no row, or a row with no check, is a finding (`high` for the request or an owner decision, `medium` for a call).
+   So is a spec call or plan row that narrows or reinterprets a rule the request states (`high`): judge by the
+   request's words, not by the spec that documents the change.
 1. Boundaries: every number or time rule at −1 unit / exact / +1 unit, in the request's unit and its governing time zone
    ("up to N before" allows exactly N); a DST-crossing case where one exists.
 2. Rule parity: for each "same as X" or reused flow, list X's checks from the code and run each one on the new path.
