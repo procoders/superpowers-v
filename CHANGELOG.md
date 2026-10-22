@@ -1,14 +1,71 @@
 # Changelog
 
-All notable changes to **superpowers-v (Compound V)** are documented here.
+All notable changes to **Compound V** (plugin id `compound-v` from 4.0.0, `superpowers-v` before it) are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses semantic versioning.
 
 ## [Unreleased]
 
-## [4.0.0] — unreleased
+## [4.0.0] — 2026-10-23
 
-See README; full notes in Task 12.
+Compound V is now a standalone plugin, `compound-v`. Its cycle is brainstorm → pre-flights → plan →
+native build → verification with tree-bound receipts, and Claude Code does the orchestration. The
+salon experiments on 3.9.1 ([docs/v4/salon-report.md](docs/v4/salon-report.md)) showed the light flow
+beating the full v3 pipeline on every blind judgement at about a tenth of the cost. The component-by-component
+reasoning is in [docs/v4/transition.md](docs/v4/transition.md). Nothing about v4 itself is measured yet:
+the acceptance benchmark runs before release.
+
+### Removed — and why ([transition table](docs/v4/transition.md))
+
+- **The orchestration engine** (workflow emitter, manifest and validator, integration gate, collect,
+  failure policy, fast path, `/v:dispatch`, `/v:orchestrate`, `/v:resume`, `/v:collect`, `/v:status`):
+  it added nothing at salon size, and Claude Code now orchestrates natively.
+- **Engine agents** (`parallel-dispatcher`, `partition-reviewer`, `transport`, `implementer`,
+  `spec-reviewer`): their jobs went with the engine; one `reviewer` agent replaces the review gate.
+- **The lane-guard hook**: the most expensive ambient hook; lanes are now checked before merge by
+  `lane finish`.
+- **Epics** (`/v:epic`, epic state, arbiter, marathon watcher): two epics in the plugin's life, and
+  native `/goal` and `/loop` cover the rest.
+- **V-memory as an engine** (FTS5 index, embeddings, `/v:remember`, `/v:memory-refresh`): its benefit
+  in runs was never shown; the name now means the docs themselves, searched by a read-only agent.
+- **Headless build workers** (Codex, opencode, Antigravity, Cursor): Antigravity and Cursor never ran a
+  real job; Codex stays as a reviewer, and workers return only with a deterministic result check.
+- **`/v:adr`**: decisions now live in the spec's "Decided by the owner" and "My calls" sections.
+- **`/v:models`** and model discovery/resolution: replaced by the `models` map `/compound-v:init`
+  writes and the plan's task → model table.
+- **Run observability** (liveness probe, transcript watch, dashboard): they watched engine jobs that no
+  longer exist.
+- **Statistics** (scorecard, `/v:lessons`, triage outcomes, the usage extractor/aggregator): nothing
+  decided on their data; run cost now comes from the CLI's own cost record.
+- **Triage pre-eval** (DIRECT/SCOPED/FULL, the impact taxonomy, the paid request classifier,
+  `/v:triage`): replaced by deterministic light/full tiers plus escalation on the diff's content.
+- **The Superpowers dependency**: v4 has its own brainstorm and plan skills.
+- **`evals/`**: the suite was never scored.
+- **v3's docs** moved to `docs/archive/v3/`.
+
+### Added
+
+- **Skills** `brainstorm`, `plan`, `build`, `verify` and a shorter `init`; `onboard` and `pr-review`
+  carried over. All are `/compound-v:<name>`.
+- **One CLI**, `scripts/compound-v.py` over `scripts/cvcore/`: canonical tree snapshot, run record
+  (`docs/compound-v/runs/`), HMAC-signed receipts bound to the tree and the acceptance table, scope
+  check, diff escalation, lane gate, usage, band data.
+- **The verification bar**: tests, a real-browser (or main-flow) check, a scope check and, for full
+  runs, an executable review in an isolated checkout by Codex or a Claude Opus subagent, at most two
+  rounds. Outcomes `verified`, `incomplete` or `failed`; only verified is done.
+- **Hooks**: prompt engagement, a Stop hook that refuses an unverified run once (never twice), a session
+  brief, a guard on run records, and a reviewer-stop recorder. All fail open.
+- **The band** shows the cycle stage, receipt marks and run cost from the run record.
+- **Parallel lanes** through native worktree subagents, merged by `lane finish` only after scope,
+  merge and tests pass.
+- **Agents** `reviewer` (Opus) and `v-memory` (Haiku, read-only: the one exception to never-Haiku).
+- `/compound-v:init` writes `worktree.baseRef: head` and a deny rule for run records, and offers to
+  disable Superpowers in the project.
+
+### Migration
+
+v3 stays installable as `superpowers-v@procoders`, pinned to the `v3` branch. Finish unfinished v3 runs
+with v3. See README, "Coming from v3".
 
 ## [3.9.1] - 2026-10-21
 

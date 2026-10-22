@@ -1,204 +1,126 @@
-# Compound V — Codex / Universal Agent Shim (🧪 experimental, untested)
+# Compound V — agent instructions
 
-This file documents how the plugin's content *would* be consumed by tools that read `AGENTS.md` from a project root (Codex CLI and similar). **It has not been tested on a real Codex install** — tool-name mappings and dispatch syntax are based on documentation and may need adaptation per your harness version.
+Portable instructions for any agent working on this repository (Claude Code reads them through
+`CLAUDE.md`; Codex and other harnesses read this file directly). Compound V 4.0 is a Claude Code
+plugin, id `compound-v`. Its skills and hooks assume Claude Code; other harnesses can read the
+skill prose but get none of the hooks.
 
+## What the plugin does
 
-## Requirements
+One cycle, in this order. Each step is a skill (`/compound-v:<name>`):
 
-**Claude Code ≥ 2.1.219.** Compound V 3.0 hands execution to the native Workflow runtime and to native hook events (`PreToolUse`, `UserPromptSubmit`, `PostCompact`, `Stop`); older versions lack them. The `SessionStart` banner reads `claude --version` once and appends a single warning line when the running version is below that floor.
+1. **brainstorm** — one question per message about the product, data lifecycle, jurisdiction,
+   forms, operations and edge cases; writes the spec to `docs/compound-v/specs/` and starts the run
+   record.
+2. **pre-flights** (launched by brainstorm, in parallel) — domain research always; code archaeology
+   when git tracks source code; a library audit when the spec names or implies a dependency. Each
+   writes one file under `docs/compound-v/preflight/`.
+3. **plan** — tasks with their tests, an acceptance table (behaviour → check), the four checklists
+   answered, a task → model table, lanes only for parallel work, and one machine-readable
+   `compound-v-plan` block that the CLI attaches to the run.
+4. **build** — Claude Code builds natively: one agent by default, native worktree subagents only when
+   the plan has lanes, each merged through `lane finish`.
+5. **verify** — tests, a real-browser (or main-flow) check, a scope check and, for full runs, an
+   executable review in an isolated checkout with at most one fix round. Each step writes a signed
+   receipt bound to the working tree. Outcome: `verified`, `incomplete` or `failed`.
 
-**Also required (3.9.0):** upstream Superpowers (every trigger keys on `superpowers:brainstorming` /
-`superpowers:writing-plans`), `jq` (the hooks read their payloads with it), PyYAML for the interpreter Engine C uses,
-and a repository with a first commit. `/v:init` probes all four and drafts the impact taxonomy `/v:dispatch` requires.
+Small changes (typo, copy, config) skip straight to **verify** as a light run. Around the cycle:
+**init** (per-project setup), **onboard** (citation-verified knowledge base for an existing repo)
+and **pr-review** (review-only, never edits).
 
-**On measurement, stated up front.** No speed or cost claim ships with 3.0. The observation that motivated proportionate tests — a small change running a full suite — was not reproduced during the design recon, so the test-scoping defaults are **principle-derived, not measured**. The scoped floor is early feedback and does **not** restore what a full suite guarantees; the merge-blocking CI run does, and it always runs. The pipeline records selected-test counts and measured-only durations so a future release can speak from real data instead.
+## Tiers and the verification bar
 
-**One ambient cost worth knowing before you install.** The lane-enforcement hook runs on every `Write`/`Edit`/`Bash` tool call in every session, and
-its cost depends on the machine — it is a small table, not a single number — because it first has to find an interpreter that can read a manifest.
-**Measure it on your machine.** This file publishes no figure: the repo carries no measurement harness to keep one honest, and every number it used to
-print was a one-off on one laptop. The shape to expect: the **unresolved** path — the ordinary human session, and the only path a session that never
-dispatches will ever take — is cheapest where the first candidate interpreter can `import yaml` (on macOS, `/usr/bin/python3`) and pays exactly one
-viability probe, and dearest where **no** candidate has PyYAML and the hook pays **three** probes (two `import yaml`, one `-c pass`). Once a job
-resolves and the manifest is parsed it costs more again, whether that write is then allowed or denied — the verdict has never been the expensive part;
-resolution and the manifest parse are. What makes your own figure worth anything: mean of 50 invocations per cell, the bare-interpreter floor taken in
-the same round and the round discarded when that floor drifts, and the unresolved path measured somewhere actually unresolved — a checkout that a live
-run's lane map claims measures the *resolved* path and calls it unresolved. Reproduce it from a checkout root — the total divided by 50:
+| Tier | Required receipts |
+|---|---|
+| light | `tests`, `scope`, plus `live` when the diff touches UI |
+| full | `tests`, `review`, `live`, `scope` |
+
+The CLI reclassifies every diff by content (auth, sessions, payments, personal data, new endpoints or
+forms, big or binary diffs); a light run that trips one becomes full and its receipts are cleared.
+Only `live` can be waived, and only on the user's words in chat. At most two review rounds.
+
+## The CLI
+
+Everything that must not be self-reported lives in `scripts/compound-v.py` over `scripts/cvcore/`.
+Exit 2 with one line on any error.
+
+| Subcommand | Does |
+|---|---|
+| `run start --tier light\|full --request-file - [--spec] [--base] [--change-set]` | Create a run record |
+| `run stage --to <stage>` · `run plan --plan <path>` · `run show` · `run bind --session` | Move stage, attach the plan block, print, bind to a session |
+| `receipt tests\|live\|scope` | Run the step, write a signed receipt (exit 1 unless pass) |
+| `checkout --dest <dir>` | Materialize the current tree snapshot for the Claude reviewer |
+| `review codex` · `review record --findings <f> --reviewer claude` · `review codex-plan --plan <p>` | Record an executable review; optional advisory plan review |
+| `waive live --reason "<user's words>"` | Record a browser-check waiver |
+| `status` | Outcome; exit 0 verified, 3 pending, 4 incomplete, 5 failed |
+| `scope` · `escalate` · `classify-request` | Diff vs change set and lanes; diff tier; prompt tier |
+| `lane finish --task <t> --branch <b>` | Scope-check, merge and test one parallel lane |
+| `usage --session --transcript` · `hud [--brief]` · `cochange --path` | Run cost from the CLI's record; band JSON; co-change lookup |
+| `snapshot` | Print the canonical tree hash |
+
+Stages: `brainstorm, preflight, plan, build, verify, done`. Outcomes: `verified, incomplete, failed`
+(or `null` while open).
+
+## Hooks (`hooks/hooks.json`)
+
+| Event | Script | Does |
+|---|---|---|
+| `UserPromptSubmit` | `prompt.sh` | Classifies a plain request and points at brainstorm (full) or verify (light); one "run /compound-v:init" line in a project that is not set up |
+| `Stop` | `stop.sh` | Refuses the first stop of an unverified run, once, with the reason; records usage |
+| `SessionStart` | `session.sh` | One-line brief of the open run; onboard doc staleness |
+| `PreToolUse` (Write/Edit) | `guard.sh` | Denies hand edits under `docs/compound-v/runs/` |
+| `SubagentStop` | `subagent.sh` | Records that the `reviewer` subagent ran |
+
+Plus the band mod `hooks/run-band.tsx` (stage, receipts, run cost, quota footer). All hooks fail open.
+
+## File map
+
+| Path | Responsibility |
+|---|---|
+| `scripts/compound-v.py` | Entry point; calls `cvcore.cli.main()` |
+| `scripts/cvcore/gitio.py` | git wrapper, repo root, `GitError` |
+| `scripts/cvcore/snapshot.py` | Canonical tree hash, ignored-env digest, materialized checkout |
+| `scripts/cvcore/run.py` | Run record: create, load/save, active run, stages, plan block |
+| `scripts/cvcore/scope.py` | Changed files vs base, glob match, symlink escape |
+| `scripts/cvcore/escalate.py` | Diff content predicates → tier; prompt classifier |
+| `scripts/cvcore/receipts.py` | Step runner, signed receipts, waivers, review recording, status |
+| `scripts/cvcore/review.py` | Codex executable review and plan review |
+| `scripts/cvcore/usage.py` | Run cost from the CLI's `cost-state` transcript entries |
+| `scripts/cvcore/lanes.py` | Lane gate for native worktree writers |
+| `scripts/cvcore/hud.py` | Band JSON, one-line brief, co-change lookup |
+| `scripts/cvcore/hooks.py` | Stop, prompt, session, guard and subagent decisions |
+| `scripts/cvcore/cli.py` | argparse wiring |
+| `scripts/compound-v-run-with-timeout.py` | Process-group timeout supervisor for every step |
+| `scripts/compound-v-onboard.py` | onboard's deterministic gates |
+| `scripts/lint-frontmatter.py` | Agent/skill frontmatter and model-policy lint |
+| `schemas/review-findings.schema.json` | Reviewer output shape |
+| `hooks/*.sh`, `hooks/hooks.json`, `hooks/run-band.tsx` | Hook wrappers and the band |
+| `skills/{brainstorm,plan,build,verify,init,onboard,pr-review}/` | The prose |
+| `agents/{v-memory,code-archaeologist,doc-validator,domain-expert,reviewer}.md` | Subagents |
+| `tests/core/`, `tests/hooks/` | Tests |
+
+## Agents and model policy
+
+- `reviewer` — Opus. The executable reviewer in an isolated checkout.
+- `domain-expert`, `code-archaeologist`, `doc-validator` — Sonnet, turn-capped. The pre-flights.
+- `v-memory` — Haiku, tools `Read, Grep, Glob` only. Read-only search over `docs/compound-v/`.
+
+Opus by default; Sonnet for lookups and mechanical work; **never Haiku** except `v-memory`; Fable only
+by explicit choice. `scripts/lint-frontmatter.py` enforces it.
+
+## Rules for changes here
+
+See [CONVENTIONS.md](CONVENTIONS.md). In short: no unmeasured numbers, stdlib Python 3.9, hooks fail
+open, state only in `docs/compound-v/` or `~/.claude/compound-v/`, skills not commands, core ≤ 2500
+lines.
+
+## Tests
 
 ```bash
-P=$(printf '{"hook_event_name":"PreToolUse","tool_name":"Write","session_id":"s","cwd":"%s","tool_input":{"file_path":"%s/README.md"}}' "$PWD" "$PWD")
-time (for i in $(seq 1 50); do printf '%s' "$P" | ./hooks/lane-guard.sh >/dev/null; done)
+python3 -m unittest discover -s tests/core -v
+for t in tests/hooks/*.sh; do bash "$t"; done
+python3 scripts/lint-frontmatter.py .
+shellcheck hooks/*.sh
 ```
 
-The resolved figure needs a lane map, so drive the same loop against the sandbox `tests/test-lane-guard.sh` builds. Set `CV_LANE_GUARD_LOG` and read it back to confirm which path you actually hit: the hook names the interpreter it chose on **every** path, but **once per session**, not once per call — measured over 50 invocations in one session, that is **1** interpreter line instead of 50 (100 log lines → 51 on the unresolved path; 50 → 1 on a resolved in-lane allow). A repeat is suppressed by a marker kept beside the log, so if the line is missing from the run you are timing, look earlier in the same log rather than concluding the ladder did not run; a *change* — a different interpreter, a candidate newly passed over — is a different message and reappears. An unresolved call adds `ALLOW (job unresolved)`, while a resolved in-lane allow says nothing more. A checkout with a **live** run in it does not take the unresolved path at all — if that run's lane map claims the checkout for a job, the recipe above measures the resolved path, and the log is how you find that out instead of publishing it.
-
-**Two defences the hook pays for on every call, and neither is free.** The `PYTHONPYCACHEPREFIX` redirection that stops a planted `.pyc` being
-executed makes a redirected bytecode-cache lookup that `PYTHONDONTWRITEBYTECODE` forbids populating recompile every stdlib module from source, every
-time. The interpreter **viability probe** is what guarantees the guard never picks an interpreter that cannot run. Both are worth paying; neither is
-free, and this file once said they were. **Every external process the hook starts is bounded**: 0.9 s per interpreter probe (the bound is there for
-the interpreter that *hangs*, not for the ordinary one), 5 s for a delegated manifest parse, and `timeout: 10` on the registration in
-`hooks/hooks.json`, because a budget a hook applies to itself is not a budget on the hook. A probe that runs out of budget stops the ladder, says so
-once, and allows. And when the hook cannot create the private bytecode-cache directory that redirection needs, it now imports **nothing** — it used to
-carry on without the redirection, which dropped the defence on precisely the machine whose temp dir is full, unwritable or hostile. It is what turns
-lane enforcement from detection-after-the-fact into a refusal before the write. The YAML loader the hook imports, `scripts/compound-v-validate-manifest.py`,
-is an entry point over the `scripts/cv_validate/` package, which it loads by explicit path and from source only: the redirection still covers the entry
-file, and no bytecode cache is consulted for the package at all.
-
-## What this plugin does
-
-Compound V is a **sidekick to Superpowers**. It intercepts the four Superpowers phase transitions (pre-brainstorm recon → brainstorming → writing-plans → execution) and adds:
-
-0. **Gated pre-brainstorm recon (Trigger 0)** 🧪 description-driven, with a **reminder-only hook backstop** (v2.8: `hooks/brainstorm-trigger0-nudge.sh` nudges when the Skill tool invokes `superpowers:brainstorming` — a reminder, not enforcement; nothing can force the recon to run. Since 3.4.17 the same hook carries Trigger 1 on the other branch: `superpowers:writing-plans` gets the pre-flight reminder, because that invocation — not the Write that saves the spec — is the first moment the spec is user-approved): before a brainstorm begins on an unfamiliar topic, a gated, bounded research pass (bundled `deep-research` if present, 3–6 parallel WebSearch otherwise, skip-with-notice if neither) writes an anti-anchoring recon doc to `docs/superpowers/recon/` that the brainstorm — and later pre-flights 1B/1C — read first. Gate order: plumbing-skip → V-memory KB hit → `brainstorm.deep_research` config (`ask` default / `auto` / `off` hard kill-switch). Recon is evidence, never a routing input. Also 🧪 description-driven: **batched elicitation** — ≥3 *independent* clarifying questions may batch into ONE screen via the surface ladder — Visual Companion form if accepted this session, else the harness's structured-question tool, else sequential (companion acceptance gates only the top surface); dependent chains stay sequential; when unsure → sequential; see `skills/compound-v/brainstorm-elicitation.md`.
-1. **Three parallel pre-flights** when brainstorming hands off to `writing-plans` — after the user approved the spec, never at spec-write time:
-   - Code archaeology (existing-code reality)
-   - Domain-expert advisor with three-layer audience search (product/regulatory reality)
-   - Library/doc validator via Context7 MCP (dependency currency)
-2. **Disjoint File Partition Map enforcement** inside writing-plans, which **materializes a `manifest.yaml`** — the machine-readable contract that drives dispatch
-3. **Manifest-driven multi-backend dispatch** (4-6 concurrent) on Opus by default, Sonnet only for strict junior-level mechanical tasks, or a headless **Codex** worker for large isolated builds
-4. **A `git diff` scope gate after every job** — a worker that writes outside its `write_allowed` list is BLOCKED and never merges; enforcement fields are git-derived, never model-self-reported
-5. **Crash-resume** via a `state.json` run directory
-
-## Orchestrator surface (v1.0 + 1.1)
-
-The execution tail is a small, deterministic orchestrator — contracts + helper scripts + the agent you already have. No daemon, no MCP server, no fabricated metrics.
-
-- **Manifest contract:** `skills/compound-v/execution-manifest.md` (schema) + `examples/manifest.example.yaml`.
-- **Backend Launcher sub-skill:** `skills/backend-launcher/SKILL.md` defines one `job_spec → job_result` contract (`schemas/job_result.schema.json`). Adapters: `adapter-claude.md`, `adapter-codex.md`, `adapter-antigravity.md` (1.1: a **real** headless `agy --print` worker — same worktree + `git diff` scope gate as Codex, but **opt-in / lower-trust**: `agy` has no kernel write-confinement, so the gate *detects* in-worktree scope leaks yet cannot *prevent* an out-of-worktree side-effect — **prefer Codex for untrusted work**), and `adapter-cursor.md` (2.1: a headless `cursor-agent -p -f` worker, verified live, same worktree + scope gate — also opt-in / lower-trust, same caveat as Antigravity; needs an authenticated `cursor-agent`).
-- **Headless Codex worker:** `scripts/compound-v-run-codex-worker.sh`. The verified `codex-cli 0.144.1` invocation (verified 2026-07-11 on 0.144.1, re-verified 2026-09-24 on 0.156.1 with `gpt-6-sol`/`gpt-6-luna` 2026-09-30 on 0.159.1 with `gpt-6.1-sol`/`gpt-6-astra`, and 2026-10-11 on 0.162.1 with all three GPT-6 defaults) runs in a git worktree (with `--json` for structured `thread.started` session-id capture as of v2.8.1):
-
-  ```bash
-  codex exec --cd "$WT" --sandbox workspace-write --skip-git-repo-check \
-    --model "$model" --json --output-last-message "$WT/.job_result.txt" \
-    -c sandbox_workspace_write.network_access=false "$prompt" >"$events_log"
-  ```
-
-  Do **not** pass `--ask-for-approval never` — it is invalid for `codex exec` (top-level/interactive flag only); `exec` already defaults to `approval: never`. Resume is `codex exec resume <uuid>`. Effort `xhigh` is **codex-only** (kernel `model_reasoning_effort`); every other backend rejects it — use `high` elsewhere.
-- **Worktree provisioning (3.6):** a manifest may carry a top-level `provision_command`, plus an optional
-  `provision_timeout_s` (default 600, range 1–1800); a job may override either. It applies to worktree jobs, and the
-  worker script — never the model — runs it once inside the fresh worktree before
-  the model launches; on the four headless backends the same two values are the flags `--provision-command` and
-  `--provision-timeout-sec`. The script then lists the untracked and ignored paths provisioning produced into
-  `preexisting.txt` and hands that file to the scope gate as `--preexisting`, so an installed dependency is never
-  counted as a write the job made. The ordering is the whole safety argument: the snapshot is taken after
-  provisioning and before the model starts, so it can only ever contain what provisioning created. A path that
-  cannot be represented on one line (a filename containing a newline) is left out and is therefore never exempt.
-  The command must be idempotent and must not modify tracked files. A separate gap: `provision_command`'s
-  snapshot is taken before the test floor ever runs, so a floor that writes its own build artifact on first
-  run (`tsconfig.tsbuildinfo`, a vitest/jest cache, `.turbo/`, `.next/`) is charged to the job the same way.
-  `toolchain_artifacts` (3.6.3) is the declared fix — a top-level list of globs, distinct from `write_allowed`,
-  subtracted from a job's violations only when `git check-ignore` confirms the path is gitignored in the gated
-  tree at gate time; a catch-all glob is rejected, so `.env` and `dist/` stay caught unless explicitly listed.
-- **Scope gate:** `scripts/compound-v-scope-check.py` unions three probes — `git diff --name-only` against the
-  job's baseline, `git ls-files --others --exclude-standard`, and the same with `--ignored` — then subtracts
-  exactly one list, the `--preexisting` snapshot, and tests every remaining path against `write_allowed`. It
-  originates no exemption of its own: it forgives nothing by extension and nothing by name.
-- **State + resume:** `skills/compound-v/state-machine.md`; `/v:resume <run-id>` re-dispatches only incomplete jobs (git-wins tie-break).
-
-> Note: the orchestrator scripts and adapters are exercised on Claude Code. On a non-Claude harness, the prose contracts (`SKILL.md`, the adapter docs, the manifest schema) are harness-neutral, but the dispatch wiring assumes Claude Code's `Task` tool — adapt to your harness's subagent mechanism. 🧪 **untested on Codex/other harnesses.**
-
-## V-memory recall surface (v2.0)
-
-A local-first RECALL layer over `docs/superpowers/**` prose. Engine: `scripts/compound-v-memory.py`; authority doc: `skills/compound-v/memory.md`. Two lanes: **CORE** = SQLite FTS5 BM25 over git-tracked prose (pure stdlib, always on); **DENSE** = opt-in embeddings (multilingual-e5-small) in an isolated venv outside the repo, rank-unioned with FTS5 and degrade-safe (absent/broken ⇒ FTS5-only). Embeddings are **PURE PYTHON** (`fastembed` = onnxruntime + tokenizers) — no Node, no daemon, no external vector-DB service. Recall is **evidence for planning + review, never a routing input** — routing stays the deterministic v1.1 order. The harness-neutral prose lives in `skills/compound-v/memory.md`; read it directly.
-
-## How Codex / non-Claude-Code harnesses use it
-
-The skill content lives at `skills/compound-v/SKILL.md` and its phase reference files. Read those directly — they're harness-neutral prose. The dispatch templates assume Claude Code's `Task` tool; in Codex, substitute your harness's subagent-spawning mechanism (e.g. `subagent` in Codex CLI).
-
-## Tool name mapping (Claude Code → Codex)
-
-| Claude Code | Codex / generic |
-|---|---|
-| `Task(subagent_type, prompt, model, maxTurns, run_in_background)` | `subagent <name> --model opus --max-turns 50 --background` |
-| `Skill <name>` | Read the skill file directly and apply |
-| `*context7*` tools | Whatever the local Context7 MCP installation exposes |
-| Codex backend (`adapter-codex.md`) | A Bash-spawned `codex exec` worker process — its own process, its own git worktree. NOT a subagent, NOT the `openai-codex` JSON-RPC broker (single-flight, can't fan out). |
-
-The Codex backend is harness-independent on purpose: it is just `codex exec` driven by `scripts/compound-v-run-codex-worker.sh`. Any harness with a shell can spawn it.
-
-## First-class agents (under `agents/`)
-
-These work in any harness that reads `agents/*.md` frontmatter. Codex CLI loads them as `subagent_type` candidates automatically:
-
-- `superpowers-v:code-archaeologist` — Phase 1A · `memory: project` (map facts: where a thing lives, hidden couplings)
-- `superpowers-v:domain-expert` — Phase 1B (with multi-layer WebSearch incl. persona forums) · `memory: project` (domain/regulatory constraints, each with its source)
-- `superpowers-v:doc-validator` — Phase 1C · `memory: project` (library/version drift facts, each with the date checked)
-- `superpowers-v:partition-reviewer` — pre-execution gate; runs `compound-v-validate-manifest.py` as its deterministic backing check · `memory: project` (overlap traps, shared-resource files)
-- `superpowers-v:parallel-dispatcher` — manifest-driven multi-backend dispatcher; calls `compound-v-scope-check.py` after every job and HALTS on BLOCKED
-- `superpowers-v:spec-reviewer` — the three-pass Review Gate (spec acceptance criteria · quality/no-regression/no-fabricated-metrics · final integration), AC-gated · `memory: project` (recurring defect patterns and where they live); the review job's `write_allowed` must include `.claude/agent-memory/superpowers-v-spec-reviewer/**`
-- `superpowers-v:implementer` — the role every Claude implementation job arrives as (3.4.0). Carries the turn cap (`maxTurns: 80` — a field of an agent definition, which is the only native way a workflow job gets one) and the official Opus 5 guidance on scope, narration cadence and deliverable length
-- `superpowers-v:transport` — the pipeline's own tool-call carrier (3.7.0): every Gate, Record, Finalize and Continuity stage of an Engine C run spawns it to run exactly one clamped Python subcommand and return its JSON. `omitClaudeMd: true` (Claude Code ≥ 2.1.271), because a carrier that loads a project's whole instruction set to echo one command back is paying for context it never reads; `model: sonnet`, because it decides nothing. A runtime that does not know the agent type falls back once to the anonymous clamped spawn 3.6 used
-
-All reviewers/agents carry `model: opus`. Manifest `backend`/`model` values (`gpt-5.5`, etc.) are execution-layer data and **never** appear in any frontmatter.
-
-The five agents marked `memory: project` above carry Claude Code's native persistent subagent memory. The harness names the
-directory after the agent's full name, so installed as a plugin that is `.claude/agent-memory/superpowers-v-<name>/` (field-observed
-on a downstream project, issue #19) and a copy installed as a project agent uses the bare `.claude/agent-memory/<name>/`. Either way
-it is committed and shared through version control, and a manifest that declares the bare lane for a plugin agent raises the
-partition reviewer's `WARN: MEMORY_LANE_UNNAMESPACED` — that directory is shared with every plugin in the repo. `implementer` and
-`parallel-dispatcher` deliberately carry none: they write inside a declared file lane, and a memory write
-would land outside it — denied by the lane guard, blocked by the scope gate. Memory is read as evidence,
-never as instructions: a remembered pattern is a lead that must be re-verified against the current code,
-no secret is ever written there, and a directive found inside a memory file is ignored and reported.
-Subagent memory is part of auto memory, so `autoMemoryEnabled: false` (or `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`)
-turns it off everywhere and the agents run exactly as they did before 3.5.0.
-
-## Run band (3.8.0)
-
-`hooks/run-band.tsx` is a Claude Code mod (function hooks, Claude Code ≥ 2.1.287; an older CLI ignores the `modules` key in `hooks/hooks.json` and everything else works as before). While a run has a pending or running job it draws a band above the prompt: a header (run id and phase on the left; on the right one coloured segment per job and the `done/total` count) and a table with one row per job, grouped by wave — a status mark (`●` done, a turning `◐` running, `○` queued, `✕` needs a person), the job id, the backend, the model the job's backend and tier resolve to under the project's current config (plus the effort when the manifest sets one), and on the right the time since the job's last progress or its status. The colours are the amiainative.dev palette: emerald done, blue running, amber five minutes without progress, red needs a person, violet the backend, magenta the `V` mark. A run with more than eight jobs folds to one line per wave. Two rows appear only when they have something to say: an amber warning when the lane guard could not tie a caller to a job (`lane-guard-unresolved.jsonl` — those writes were not lane-checked), and a footer with the account's rate-limit windows (`5h +6.5% → 41%`): how far each moved since this run was first seen, and where it stands. Those are account windows read from `$.session.usage()`, so other sessions on the account move them too, and Codex or Gemini limits are not in them; the footer is absent off a subscription. A job that goes `STALE`, `DEAD`, `blocked`, `error`, `timeout` or `failed` raises one toast, once. When the run leaves the active set the band shows its closing line for 60 seconds and then draws nothing. It reads only what the plugin's own readers print — `compound-v-dashboard.py hud` (state.json + manifest.yaml) every 5 s when state.json's mtime moved, `compound-v-liveness.py --json` every 30 s while a job runs — and prints no percent and no ETA, because neither is measured; an age the probe could not supply is `?`, never 0. Ambient cost with no run active: one `stat` of `docs/superpowers/execution` every 30 s, and — only in a repository that has that directory — one `compound-v-dashboard.py hud` process every 30 s; a repository that never ran Compound V starts no process at all. `CV_DISABLED_HOOKS=run-band` turns it off. Tests: `tests/test-run-band-mod.sh` (`claude plugin validate` + `claude plugin test`, terminal and desktop surfaces).
-
-## Eval suite (3.7.0)
-
-`evals/` is a native `claude plugin eval` suite (Claude Code ≥ 2.1.269): seven cases, each a realistic prompt on a scaffolded fixture repository with deterministic graders where the tooling's own output makes one possible (regex over the validator's and scope gate's real messages, `tool_used`) and an LLM rubric only where right and wrong answers share vocabulary; one case is a control that must NOT trigger Compound V. Run it from the plugin root with `claude plugin eval . --runs 1 --scaffold --allow-tools Bash Write Edit --threshold 0.8` — it needs a signed-in CLI and spends tokens, so it is a release gate a human runs, not a CI step. `evals/README.md` records the last real run under a dated heading; **as of 3.7.0 the suite has been enumerated and its fixtures verified against the real scripts, but no scored run has completed** (see that file for the three blockers). No number in this repository comes from it yet.
-
-## Slash commands
-
-| Command | Purpose |
-|---|---|
-| `/v:init` | Detect capabilities (Codex CLI, Context7 MCP), walk through installs, set + save routing stance |
-| `/v:orchestrate <plan>` | Materialize a `manifest.yaml` from a plan + routing policy |
-| `/v:dispatch <plan\|manifest\|run-id>` | Run the autonomous pipeline (partition-review → dispatch → scope-gate → collect → review). A bare plan path still works (backward-compatible) |
-| `/v:collect <run-id>` | Re-run collect + scope-gate + review on an existing run |
-| `/v:triage` | Size one change request and write + commit the triage record: DIRECT, SCOPED or FULL, with the predicates that decided it |
-| `/v:status [run-id]` | Render `state.json` |
-| `/v:resume <run-id>` | Reconcile + re-dispatch incomplete jobs after interruption |
-| `/v:models` | Discover models per backend (`agy models`, `codex debug models`, native Claude tiers) and write the tier→model map into `.claude/compound-v.json` |
-| `/v:review-plan <plan>` | Optional cross-model (Codex) second opinion on a high-stakes plan before dispatch — read-only, advisory; the orchestrator arbitrates |
-| `/v:epic <brief>` | Chain several features into one autonomous, resumable, dependency-ordered build on a single branch; each feature runs the full pipeline in topological order, ending with a cross-feature integration review |
-| `/v:remember <query>` | Recall search over `docs/superpowers/**` prose (V-memory) — evidence for planning + review, not a routing input |
-| `/v:adr <decision>` | Capture one genuine architecture decision as a thin, human-confirmed ADR (`docs/superpowers/adr/NNNN-slug.md`) — decision + alternatives + consequences, references verified to exist, draft→confirm→commit, then FTS5-recallable via `/v:remember` |
-| `/v:lessons [--since YYYY-MM-DD] [--min-count N]` | Draft routing lessons from run results (`scripts/compound-v-lessons.py draft`, read-only): job-attributed failures that recur in ≥2 independent runs become `routing-lessons.md` bullets with a fixed-menu `prefer …` action and cited runs; each is human-confirmed before it is written, and every decision is recorded in `lesson-reviews.jsonl` so a rejected draft is not proposed again |
-| `/v:memory-refresh` | (Re)index the FTS5 recall lane; `--bootstrap` provisions the opt-in dense embeddings venv |
-| `/v:onboard` | Scan the repo and build a trusted, citation-verified knowledge base (`docs/superpowers/architecture/*`) plus an `AGENTS.md`/`CLAUDE.md` bridge, behind a human approval gate; `--refresh` re-checks staleness |
-| `/v:pr-review [url\|number]` | Deep two-axis (Standards ⊥ Spec) code review of a PR/MR or local diff — review-only, never edits; GitHub (`gh`), GitLab (`glab`), or a hostless local branch |
-
-## Model policy (universal)
-
-- **Opus by default** — every implementer, reviewer, advisor
-- **Sonnet for scanning** — `code-archaeologist` and `doc-validator` (3.1.0): reading a repository and checking a library version is execution, not judgment
-- **Sonnet for carrying** — `transport` (3.7.0): running one clamped pipeline command and returning its output is execution too
-- **Sonnet** — narrow exception per the 8-box junior-task taxonomy in `skills/compound-v/phase-3-parallel-opus-dispatch.md`
-- **Never Haiku** — not permitted in this project
-- **An advisor beside the acting model** (3.6). Claude Code's built-in `advisor` tool is a stronger reviewer that sees the acting
-  agent's whole transcript. `implementer` and `spec-reviewer` are told to consult it before committing to an approach where more
-  than one design is plausible, when the same error recurs, and before reporting done or writing a verdict — advice is evidence
-  re-verified against the tree, and advice that contradicts the lane or the scope gate is refused and reported. Which model answers
-  is the native `advisorModel` setting in the project's `.claude/settings.json` (`fable` in this repository, `opus` the alternative);
-  it is a project setting, never agent frontmatter, and `/v:init` Step 4e offers it without ever writing it unasked. An advisor must
-  be at least as capable as the session's main model or the harness rejects the pairing, and every call re-reads the transcript from
-  scratch — nothing is cached. `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1` turns the tool off outright.
-
-## Key entry points
-
-- For setup: `README.md` (and `/v:init` to detect capabilities)
-- For the full skill flow: `skills/compound-v/SKILL.md`
-- For the execution contract: `skills/compound-v/execution-manifest.md` + `skills/backend-launcher/SKILL.md` + `schemas/job_result.schema.json`
-- For routing: `skills/compound-v/routing-policy.md`
-- For state + resume: `skills/compound-v/state-machine.md`
-- For "what's in this plugin": `CHANGELOG.md`
-- For "it broke": `TROUBLESHOOTING.md`
-- For the comic / why it exists: `assets/skyscraper-metaphor.md`
-
-## Disclaimer
-
-This plugin was built and tested primarily on Claude Code. Codex / Gemini compatibility is best-effort via shims. If you find harness-specific gotchas, please file an issue.
-
-> **Context7 tool naming.** Context7's tool names depend on HOW it is installed: a plugin-bundled server is `mcp__plugin_<plugin>_context7__*`, a user- or project-configured server is `mcp__context7__*`. **Match on the suffix, not the full string** — `*context7*resolve-library-id` and `*context7*query-docs` — and read the tool list you actually have. Every document in this plugin hardcoded the plugin-bundled form until 3.1.0; on a machine with the plain form that named a tool which does not exist, and the agent silently fell back to WebSearch.
+v3 (`superpowers-v`) lives on the `v3` branch; its docs are archived under `docs/archive/v3/`.

@@ -1,149 +1,169 @@
-# superpowers-v
+# Compound V
 
-**Compound V** — a multi-model coding sidekick for [Superpowers](https://github.com/obra/superpowers), running on Claude Code.
+A Claude Code plugin that asks before it builds and proves before it says done.
 
-![Compound V — a sidekick to Superpowers](assets/compound-v-cover.png)
+You describe what you want. Compound V asks about it one question at a time, researches the domain,
+writes a plan with an acceptance table, lets Claude Code build it, and then verifies the result with
+real commands: the project's tests, a real browser, a scope check and a review by a second model in
+an isolated copy. Each check writes a receipt bound to the exact working tree. "Done" means every
+required receipt is current and passing, nothing less.
 
-You describe a feature. Claude sizes the request, plans it, splits it into non-overlapping pieces, and hands each piece to a worker in its own isolated worktree.
-Every write is checked against the files that worker was allowed to touch, and a review gates "done". There is no start button — a hook sizes each request as you work.
+Version 4 is a standalone plugin (`compound-v`). It no longer needs Superpowers and no longer has its
+own orchestration engine: Claude Code orchestrates itself, and Compound V supplies the questions,
+the checklists and the proof.
 
-## Requirements
-- **Claude Code ≥ 2.1.219.** Compound V runs on the native Workflow runtime and on native hooks (`PreToolUse`, `UserPromptSubmit`, `PostCompact`, `Stop`). `SessionStart` warns below that floor.
-- **One ambient cost.** The lane-guard hook runs on every `Write`/`Edit`/`Bash` call. What it costs depends on the machine — measure it on yours; the recipe is in [AGENTS.md](AGENTS.md).
-- **[Superpowers](https://github.com/obra/superpowers), installed as its own plugin.** Every trigger keys on `superpowers:brainstorming` and `superpowers:writing-plans`; without it nothing fires.
-- **`jq` on `PATH`.** The hooks read their payload with it. Without it the triage hook prints one notice per session naming jq and the rest stay silent — no triage, no reminders, no triage gate.
-- **PyYAML for `/usr/bin/python3`** (and for the `python3` you run commands with). The workflow emitter reads `manifest.yaml` with it, and the emitted workflow runs its Gate and Record commands under `/usr/bin/python3`. `/v:init` checks both.
-- **A git repository with at least one commit.** A job's baseline is pinned to a commit; with no `HEAD` there is nothing to pin. In a fresh project: `git init && git add -A && git commit -m "initial commit"`.
-- **One project setting.** `worktree.baseRef` should be `head`, or a dependent job runs in the main checkout and such jobs are serialized. `/v:init` writes it unless you say no — see Install.
+## The cycle
+
+1. **Brainstorm** (`/compound-v:brainstorm`). One question per message: the product and its users,
+   the data lifecycle (create, change, retire, delete), jurisdiction and deployment, security and
+   every form, operations, and edge cases on purpose. Prior decisions in `docs/compound-v/` are looked
+   up first. Output: a spec in `docs/compound-v/specs/`, checked by a fresh builder and approved by you.
+2. **Pre-flights**, in parallel. Domain research always (a few searches, each requirement with its
+   source and a check). Code archaeology when the repo already has code. A library audit when the
+   spec brings in dependencies. Output: `docs/compound-v/preflight/`.
+3. **Plan** (`/compound-v:plan`). Tasks with their tests, an **acceptance table** (behaviour → check),
+   four checklists answered item by item (data lifecycle, every page and state, every form and
+   endpoint, operations), and a task → model table.
+4. **Build** (`/compound-v:build`). Native Claude Code: one agent by default, tests written with the
+   code.
+5. **Verify** (`/compound-v:verify`). The steps below, then one report.
+
+Small changes (a typo, copy, a config value) skip straight to verify as a **light** run. You do not
+have to call any of this by name: in a set-up project a hook reads each plain request and points
+Claude at brainstorm or verify.
 
 ## Install
-```
-/plugin install superpowers@claude-plugins-official
-/plugin marketplace add https://github.com/procoders/superpowers-v
-/plugin install superpowers-v@procoders
-```
 
-Then the two tools, if `/v:init` reports them missing: `brew install jq` (or your distribution's `jq` package) and
-`/usr/bin/python3 -m pip install --user pyyaml` (or the distribution's `python3-yaml` package). Start a new session so the plugins' skills and hooks load.
-
-**Other model CLIs are optional.** Install and log into them and Compound V picks them up; without them it runs Claude-only.
-
-- **Codex** (≥ 0.156.1, for the gpt-6 family): `npm i -g @openai/codex` → `codex login`
-- **Cursor:** `curl https://cursor.com/install -fsS | bash` → `cursor-agent login`
-- **Antigravity:** install the `agy` CLI → log in
-
-Then the one setting, which `/v:init` offers with yes as the default. `worktree.baseRef` is a **native Claude Code project setting** in the project's `.claude/settings.json`, with two values: `fresh` (Claude Code's default) and `head`.
-It is project-wide: `head` branches every worktree from the current `HEAD`, your own `--worktree` sessions included. A job that depends on another needs it to see that job's work.
-Without it such a job runs in the main checkout, and a wave with more than one of those is split so each runs alone — it buys parallelism, not correctness: the run completes either way.
-
-```json
-{ "worktree": { "baseRef": "head" } }
+```bash
+claude plugin marketplace add procoders/superpowers-v
+claude plugin install compound-v@procoders
 ```
 
-_(Optional)_ Context7 MCP gives the doc-validator real library docs, but only in a session it is attached to — a pre-flight agent launched inside a Workflow inherits no MCP tools
-and falls back to WebSearch/WebFetch (12 of the last 16 library audits ran that way). Install it with `/plugin install context7@claude-plugins-official`.
+The marketplace is called `procoders` and lives in the GitHub repo `procoders/superpowers-v`. Then,
+in each project:
 
-## How to use it
-1. **Install** — the commands above, then a new session.
-2. **Run `/v:init` once.** It checks the prerequisites (Superpowers, `jq`, PyYAML, a first commit), detects which model CLIs you have,
-   saves the config, writes `worktree.baseRef: head` unless you say no, and drafts the impact taxonomy
-   (`.claude/compound-v-impact-taxonomy.yaml`) for you to confirm and commit. `/v:dispatch` refuses to run without that file (unless pre-eval is disabled by config).
-3. **Work.** Describe the feature, or start brainstorming as usual. A `UserPromptSubmit` hook scores the first change request of each session
-   and sizes it as DIRECT, SCOPED or FULL. There is no command to launch the orchestration; Claude runs it for you.
+```
+/compound-v:init
+```
 
-`/v:onboard` is optional: it adds a citation-verified knowledge base of the repo, a churn cache and path-scoped rules. It is no longer what creates the taxonomy.
+Init probes git, Python, Codex, a browser runner and Superpowers, and proposes
+`.claude/compound-v.json` (reviewer, test command, budget) plus two native project settings. Every
+write is shown as a diff and applied only on your yes.
 
-## 🎮 New here? Learn it as a game → **[Compound V Academy](https://amiainative.dev/compound-v)**
-Three gamified episodes walk you through the whole pipeline, and the **[cheatsheet](https://amiainative.dev/compound-v/cheatsheet)** puts commands, triggers, memory and routing on one page.
+**Needs:** Claude Code, git, a repository with at least one commit, and Python 3.9 or newer.
+**Optional:** `codex` as the reviewer (otherwise a fresh Claude Opus subagent reviews), and Playwright
+for web projects' browser checks (the project's dependency, not the plugin's).
 
-## How it routes the work
-![How Compound V decides who does the work](docs/routing.svg)
+## The verification bar
 
-- **DIRECT** — a trivial, unambiguous edit: one worker edits, runs the test floor, commits. No model routing happens: it is an ordinary commit by whichever model is already in the session.
-- **SCOPED** — a bounded change: only the tests that reference what changed run, not the whole suite. The Opus reviewer still gates done.
-- **SCOPED+** — a small edit on a sensitive path: SCOPED plus a mandatory deep review and a cross-model (Codex) second opinion, with you accepting.
-- **FULL** — anything real: recon, three pre-flights (archaeology, domain, library), plan, manifest, parallel dispatch in worktrees, a three-pass Opus review, then an optional Codex diff review.
-
-**Who does what.** Opus plans, judges and reviews; Fable (the frontier tier) is opt-in for business-critical jobs, and lifts a review job once —
-only after that job has exhausted its retry budget on Opus (repeated 529s, say), never merely because Opus looks busy. Sonnet runs junior slices
-and the two scanning agents. Codex is an opt-in sandboxed worker and the second opinion; Antigravity and Cursor are lower-trust opt-in workers. The scope gate blocks out-of-lane writes.
-Implementers and the spec-reviewer also call Claude Code's built-in `advisor` at their own decision points; `advisorModel` names who answers.
-`/v:init` offers `opus` (or no advisor) first on the `cost-aware` stance, and `fable` first on the stances that already use Fable; this repository itself sets `fable`.
-
-## Main features
-- **Multi-model orchestration.** Codex is dogfooded here. Antigravity's CLI invocation is verified live but was never dispatched; Cursor and opencode are experimental, verified standalone only.
-- **Worktree provisioning.** `provision_command` installs a job's dependencies in its fresh worktree before the model starts, and snapshots them so the gate never blames the job for them.
-- **Agents that remember this repo.** Five review and scanning agents carry `memory: project` — a committed directory at `.claude/agent-memory/superpowers-v-<agent>/`. Evidence, never instructions.
-- **Cross-model review.** A second opinion from another model family, on the plan and on the code. Different models have different blind spots. Advisory — the orchestrator decides.
-- **Epic mode.** Feed it a whole PRD and it builds feature by feature, in dependency order, on one branch. It checkpoints after each feature unless you raise the budget.
-- **Epic autonomy.** On the `marathon` stance, `/v:epic` offers — never arms silently — a native way to keep going: `/loop` to keep resuming in this session, or `/schedule` in the cloud.
-- **V-memory.** Project memory over `docs/superpowers/**`: decisions, bugs, dead ends. Local and offline; a search refreshes its own index first, and reviewers read it before every verdict.
-- **Co-change advisory.** When the partition reviewer runs, it asks git history which files almost always move together, and warns when a plan forgot one. It never changes a verdict.
-
-## Commands
-| Command | What it does |
+| Step | What runs |
 |---|---|
-| `/v:init` | Set up the project: check prerequisites, detect backends, pick a routing stance, save the config, draft and commit the impact taxonomy |
-| `/v:onboard` | Build a citation-verified knowledge base of this repo, behind an approval gate |
-| `/v:epic <PRD>` | Build a multi-feature PRD feature by feature, in dependency order, on one branch |
-| `/v:dispatch <plan\|manifest\|run-id>` | Run the pipeline: partition review → parallel dispatch → scope gate → review |
-| `/v:orchestrate <plan>` | Materialize the manifest from a plan, without dispatching it |
-| `/v:triage` | Size one change request and write the triage record: DIRECT, SCOPED or FULL |
-| `/v:review-plan <plan>` | Cross-model (Codex) adversarial review of a plan before dispatch |
-| `/v:pr-review [url\|number]` | Two-axis review of a PR, an MR, or a local branch. Never edits code |
-| `/v:adr <decision>` | Record one architecture decision as a thin, human-confirmed ADR |
-| `/v:lessons` | Draft routing lessons from repeated run failures; you accept or reject each one before it is written |
-| `/v:remember "<query>"` | Search the project memory for what this repo already learned |
-| `/v:memory-refresh` | Re-index the memory; `--bootstrap` adds the optional semantic lane |
-| `/v:status [run-id]` | Show a run's phase and per-job table; `--live` watches a running dispatch |
-| `/v:collect <run-id>` | Re-run the collect + scope-gate + review tail of a run, without re-dispatching workers |
-| `/v:resume <run-id>` | Reconcile against git and re-dispatch only the jobs that did not finish |
-| `/v:models` | Refresh which concrete model each backend tier uses |
+| tests | The project's own test command |
+| live | A real browser submits real forms and checks the stored result (Playwright); for non-web projects the binary or API runs its main flows |
+| scope | The run's diff against the files the plan declared |
+| review | A second model reviews an isolated copy of the tree against your original request and the acceptance table, runs things, and reports structured findings. At most two rounds, so one fix round |
 
-## What runs in every session
-| Event | What it does |
+Each step writes a signed receipt bound to the working tree. Edit a file afterwards and the receipt is
+stale. A run ends in exactly one outcome:
+
+- **verified** — every required receipt is current and passing. Only this is reported as done.
+- **incomplete** — a step could not run: no browser, a timeout, the budget hit, or the second review
+  still has blocker or high findings. The report names the step and the reason.
+- **failed** — a step ran and failed, and no review round is left.
+
+Claude cannot argue its way past this: if it tries to stop on an unverified run, the Stop hook refuses
+once with the reason. The second stop goes through and the run is recorded as incomplete or failed.
+The session is never trapped. A browser check can be waived only by you, in chat, and the waiver is
+quoted in the receipt.
+
+## Light and full
+
+| Tier | Receipts required |
 |---|---|
-| `SessionStart` | Prints the resume banner; refreshes the memory index in the background |
-| `UserPromptSubmit` | Scores the first change request of the session and writes the triage record |
-| `PreToolUse` (Write/Edit/Bash) | The lane guard: refuses a write outside the job's declared lane |
-| `PreToolUse` (Skill) | Reminds a brainstorm to run its recon pass first, and reminds `writing-plans` to run the three pre-flights on the just-approved spec first. Reminders only |
-| `PostToolUse` (Write) | Nudges when a plan, spec or recon doc is saved; refreshes the memory index. A saved spec is told to wait for your review — the pre-flights fire later, at `writing-plans` |
-| `PreCompact` / `PostCompact` | Snapshots the run state before a compaction, and reports it after |
-| `Stop` | The triage gate: holds the turn open when code changed and no triage record covers it |
-| run band (mod, Claude Code ≥ 2.1.287) | While a dispatch runs, draws it above the prompt — a segment per job, then a row per job with its status, backend, model and time since last progress — and toasts once when a job stalls or is blocked. No percent, no ETA. Off: `CV_DISABLED_HOOKS=run-band` |
+| light (typo, copy, config) | tests, scope, plus live when a page or form changed |
+| full (the default for features) | tests, review, live, scope |
 
-The triage gate is on by default. It is exempt on `docs/superpowers/**`, fires at most once per session, and fails open. To turn it off, put
-`{ "enforcement": { "triage_gate": false } }` in `.claude/compound-v.json` — an explicit `false` is the only value that does it.
+The tier follows the diff's content, not its file names. A "small fix" that touches auth, sessions,
+payments, personal data, new endpoints or forms, or a big or binary diff, becomes a full run, and its
+earlier receipts are cleared.
 
-## Good to know
-- **A `lightweight` budget profile** — `/v:init` Step 3f. It sets the `cost-aware` stance, turns pre-brainstorm research off, keeps the advisor off or on Opus,
-  lowers the retry budget to `retry: {max_attempts: 1, escalate_reviewer: false}` (see `/v:init` Step 3f for where it is written), and skips the archaeology pre-flight on greenfield work. What it saves is **not measured yet**,
-  and it does not turn off the Opus partition review, the domain pre-flight or the three-pass review.
-- **Antigravity and Cursor are lower-trust** — no kernel sandbox, so the scope gate catches an out-of-bounds write after the fact but cannot prevent it. Prefer Codex for anything sensitive.
-- **Cursor on a Free plan** can only use its `auto` model; named models are paid.
-- **Epic mode is bounded by default** — it stops after each feature for a human checkpoint, and is not an overnight build unless you raise the budget.
-- **Research-grounded brainstorming is guidance, not a mechanism** 🧪 — the skill asks an unfamiliar-topic brainstorm to run a gated recon pass first and to batch independent
-  questions into one screen. A hook only reminds; nothing enforces either, and the recon doc is evidence, never a routing input.
-- **Agent memory is off-switchable** — `{"autoMemoryEnabled": false}` turns it off everywhere. `implementer` and `parallel-dispatcher` carry none: a memory write would leave their lane.
-- **A noisy hook is off-switchable too** — `CV_DISABLED_HOOKS=<name>,<name>` (comma-separated basenames, no `.sh`, spaces ignored) turns off individual reminder/nudge hooks, e.g. `CV_DISABLED_HOOKS=triage-prompt-nudge,memory-refresh`. `lane-guard` is exempt — see TROUBLESHOOTING.md.
-- **Marathon mode is still not fire-and-forget.** It drops the checkpoint and adds an arbiter panel, a blocker ledger and breakers, but after a hard death you re-run `/v:epic <epic-id>` yourself.
+## Parallel lanes
 
-## Verification program
+One agent builds by default. When the plan has large, independent tasks that write disjoint files, it
+can declare **lanes**: each task gets exclusive file globs and runs as a native Claude Code subagent
+in its own worktree. Nothing merges on trust: `compound-v.py lane finish` checks that the lane stayed
+in its globs, merges it, and runs the tests on the merged tree, or refuses with the reason (outside the
+lane, interrupted worker, conflict, failing tests, dirty main tree). In the salon brownfield run, v3's
+parallel waves added nothing at that size, so the plan skill uses lanes only when the work is large.
 
-**Native evals (3.7.0).** `evals/` is a `claude plugin eval` suite — seven cases on scaffolded fixture repos, graded mostly by regex over the real validator and scope-gate output, with a no-plugin baseline arm. It is a release gate a signed-in human runs (`claude plugin eval . --runs 1 --scaffold --allow-tools Bash Write Edit --threshold 0.8`), not a CI step; `evals/README.md` keeps the last real scores, and until one is recorded there no eval number exists.
-Compound V is dogfooded against its own claims in eight staged cycles, each run against native Claude Code mechanisms rather than trusted from prose. Every cycle's review is recorded in
-[docs/superpowers/dogfood/README.md](docs/superpowers/dogfood/README.md) — a generated index whose footer carries the tally (56 reviews, 11 APPROVED as this was written).
+## Why v4: the salon evidence
 
-The eight: **DIRECT, attended** (one file, an ordinary commit, the Stop gate silent) → **SCOPED** (the triage-size feature, run through the SCOPED path itself) → **FULL with zero
-manual interventions** (the transcript-watch feature) → **multi-model** (a `backend: codex` job dispatched on Engine C) → **the first epic** (features chained end to end on one
-branch; 5a and 5b cover V-memory recall being real, then recall turning into action) → **a foreign repository** (set up from `/v:init`, driven through a real change) → **death and
-resurrection** (a killed run resumed from committed state) → **a perfect pass with a stopwatch**. Read the index for the current stage.
+v4 was designed from a set of experiments on Compound V 3.9.1, not from a v4 run. A small salon booking
+app was built from the same brief, under the same model and sandbox, and judged blind by Codex running
+the code. All numbers below come from [docs/v4/salon-report.md](docs/v4/salon-report.md); costs are
+the Claude Code CLI's own estimate.
 
-## Under the hood
-The orchestration, scope enforcement, routing and memory are plain bash and Python scripts and skill docs you can read.
+| Build | Agent time | CLI cost | Rubric (2 judgements) | Capabilities "considered" (2 judgements) |
+|---|---|---|---|---|
+| Light flow (A5): owner answers + domain research + checklists + one review/fix pass | ~17.5 min | ~$8.1 | 94 / 99 | 72 / 79 |
+| Compound V 3.9.1 full pipeline incl. fix round (B) | ~49 min | ~$87 | 62 / 72 | 52 / 65 |
+| Owner answers + one review/fix pass, no checklists (A4) | ~11 min | ~$3.8 | 45 / 49 (critical defect) | 45 / 34 |
 
-- [skills/compound-v/SKILL.md](skills/compound-v/SKILL.md) — the orchestrator · [skills/compound-v/epic-mode.md](skills/compound-v/epic-mode.md) — epic mode
-- [skills/compound-v/memory.md](skills/compound-v/memory.md) — V-memory · [skills/backend-launcher/SKILL.md](skills/backend-launcher/SKILL.md) — the backend workers
-- [CHANGELOG.md](CHANGELOG.md) — version history · [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — when it breaks
+On an existing codebase (one feature on A5's code), the light flow scored 75 / 78 against the full
+v3 pipeline's 69 / 69, at ~15.5 min and ~$8.8 against ~28 min and ~$17.8.
 
-Built as a sidekick to [Superpowers](https://github.com/obra/superpowers). MIT licensed.
+What the runs showed, and what v4 keeps:
+
+- **Questions before code** carry the most depth for the least money: a plain build given the
+  owner's brainstorm answers went from 37 to 63 considered capabilities in 7 minutes for ~$2.
+- **Domain research and checklists** add the production depth (GDPR, sessions, CSRF, limits).
+- **An executable review with a fix round** catches what reading misses. A4 and A5 both built a form
+  check that rejected every real browser POST; in-process tests could not catch it, and A5's review
+  found it only by checking the Fetch spec. That is why v4 adds a real-browser step.
+- **The custom engine added nothing** at this size, at roughly ten times the cost.
+
+The judges move about 10 points between runs on the same build, so every comparison above uses two
+judgements.
+
+## v4 benchmark
+
+Pending — results will be added after the acceptance run.
+
+The release gate is fixed before any v4 run: on the same salon brief, v4 must reach at least A5's mean
+rubric and mean "considered" score at a mean Claude spend of $7 or less (the CLI's estimate), and match
+the light flow on the brownfield feature without breaking the base tests. Until that run has happened,
+nothing here claims v4 is better than A5.
+
+## Skills
+
+| Skill | Use |
+|---|---|
+| `/compound-v:init` | Set up a project (once, and again after installing Codex or Playwright) |
+| `/compound-v:brainstorm` | Start anything non-trivial |
+| `/compound-v:plan` · `/compound-v:build` | Normally reached from the previous step |
+| `/compound-v:verify` | After a build, or after any small change |
+| `/compound-v:onboard` | Build a citation-verified knowledge base for an existing repo; `--refresh` when docs go stale |
+| `/compound-v:pr-review` | Deep review of a PR, a range or a local diff; never edits code |
+
+Everything Compound V writes in a project lives under `docs/compound-v/`. Run records in
+`docs/compound-v/runs/` are written by the CLI only. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) when
+something stalls, and [AGENTS.md](AGENTS.md) for the CLI and file map.
+
+## Coming from v3
+
+- **A separate plugin id.** v4 is `compound-v`; v3 was `superpowers-v`. Commands move from `/v:…`
+  to `/compound-v:…`, and dispatch, orchestrate, resume, status, epic, lessons, remember and models
+  are gone. [CHANGELOG.md](CHANGELOG.md) lists what was removed and why.
+- **v3 stays installable** as `superpowers-v@procoders`, pinned to the `v3` branch:
+  `claude plugin install superpowers-v@procoders`.
+- **Finish unfinished v3 runs with v3.** v4 cannot read v3's `state.json` or manifests. v3's docs now
+  live under `docs/archive/v3/` in this repo.
+- **Disable Superpowers per project if both brainstorms fire.** v4 does not need it.
+  `/compound-v:init` offers to set `"enabledPlugins": {"superpowers@claude-plugins-official": false}`
+  in the project's `.claude/settings.json`.
+- Run `/compound-v:init` in each project again. It merges its v4 keys into the existing
+  `.claude/compound-v.json` and shows the diff first.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
