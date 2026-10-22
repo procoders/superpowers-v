@@ -1,8 +1,13 @@
 # Checklists
 
-The plan answers **every item** for this product: `applies → A<n>`, naming the acceptance row that checks it, or `n.a. — <why>`. An item that applies and has no row is a gap. The reviewer receives this file and the plan's answers, and judges against both.
+The plan answers **every item** (R, J, D, P, F, O, T) for this product: `applies → A<n>`, naming the acceptance row that checks it, or `n.a. — <why>`. An item that applies and has no row is a gap. The reviewer receives this file and the plan's answers, and judges against both.
 
 These are the checklists that won the salon benchmark: plain Claude Code plus these four lists and one review/fix pass beat the full v3 pipeline on every blind judgement (`docs/v4/salon-report.md`). Adapted from `docs/v4/light-flow.md`.
+
+## R. The request itself (first, before any other list)
+- R1 Every rule the request or spec states is its own acceptance row, in the request's words. A clause like "follows the same rules as X" expands into **one row per rule of X** (each limit, window, cap and check X enforces), never one row for the whole clause.
+- R2 Every number in the request or spec (a time limit, a count, a window, a size) gets **boundary rows**: just inside, exactly at, just outside, with the comparison (`<` or `≤`) written in the row and computed at full precision (no truncated seconds).
+- R3 For a change to existing code: every existing rule the new path must also obey is listed and has a row; the existing tests still pass unchanged.
 
 ## J. Jurisdiction and domain (from the domain pre-flight)
 - J1 Every row of the domain pre-flight's requirement table is an acceptance row, or is marked out of scope with the spec's agreement.
@@ -34,7 +39,7 @@ These are the checklists that won the salon benchmark: plain Claude Code plus th
 - F5 Input and body-size limits, with the correct status codes.
 - F6 Rate limits on login, on public submissions, and on lookups of codes or tokens.
 - F7 No personal data in pages, URLs or responses that a third party could see, cache or index.
-- F8 Malformed input never yields a 500.
+- F8 Malformed input never yields a 500, and neither does any HTTP method on any route (`HEAD`, `OPTIONS`, an unknown verb): 405 or the GET answer, never a crash.
 - F9 Concurrency: two requests for the same last slot, or a double submit, leave exactly one result.
 
 ## O. Operations
