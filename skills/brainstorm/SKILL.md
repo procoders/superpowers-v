@@ -56,6 +56,13 @@ When `.claude/compound-v.json` says `"stance": "cost-aware"`, suggest quick. Dep
 
 Stop asking when every area is covered (answered, marked as your call, or n.a. with a reason).
 
+**What "your call" and "keep it simple" mean.** Choose what a real operator needs day to day, built simply: fewer
+moving parts, not fewer capabilities. A call never removes something the plan's checklists require
+(`${CLAUDE_PLUGIN_ROOT}/skills/plan/checklists.md`: the operator changes business data such as services, prices,
+staff and hours without a developer; sessions are revoked server-side; erasure reaches every copy). "Keep it simple"
+may decide *how* (a small admin form instead of a CMS) but not *whether*. In our benchmark, builds whose calls
+chose "edit a seed file and restart" for routine business changes lost a fifth of their product score.
+
 ## 5. Write the spec
 
 Write `docs/compound-v/specs/YYYY-MM-DD-<topic>.md`, so that a talented builder who cannot reach the owner could plan from it:
