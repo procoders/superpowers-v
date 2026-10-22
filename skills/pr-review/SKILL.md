@@ -125,7 +125,7 @@ Do NOT hardcode any project's doc paths. In Phase 0, **discover** the two axes' 
 
 **Spec-axis sources** (build a **coverage map** — do NOT stop at the first hit):
 - A spec/PRD matching the branch/feature: `specs/*/spec.md`, `specs/**/spec.md`, `docs/prd/**`, `docs/specs/**`,
-  `docs/**/specs/**` (this repo's own specs live at `docs/superpowers/specs/*-design.md`), `.scratch/**` — match
+  `docs/**/specs/**` (this repo's own specs live at `docs/compound-v/specs/*.md`), `.scratch/**` — match
   by branch slug, feature name, release number or date. A spec is not always named `spec.md`: `*-design.md`,
   `*-spec.md`, `*-plan.md` count, so glob the directory before concluding a repo has no specs.
 - The **`CHANGELOG.md` entries covering the range** — take the versions from `git log <range>` / the release

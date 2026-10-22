@@ -1,0 +1,120 @@
+---
+name: brainstorm
+description: Use before building or changing anything non-trivial in a project set up for Compound V (a feature, page, flow, integration or app). Asks one question at a time about the product, data lifecycle, jurisdiction, forms, operations and edge cases. Writes the spec, starts the run record, checks the spec with a fresh builder, gets approval, then launches the pre-flights. Typos, copy and config values skip this and go straight to compound-v:verify.
+---
+
+# Brainstorm
+
+You build well, and you build what you believe the user wants. That belief is thinner than it feels. Here you find out what they actually want, and why, before any code. In our benchmark the answers collected at this stage were the cheapest depth a build got.
+
+## 0. Size it first
+
+- **Everything is in the request** and it is a typo, copy, wording or config value: do not brainstorm. Make the change, then run `compound-v:verify` (light run).
+- **Anything else** (a feature, a page, a form, an integration, a new app): continue here.
+
+If the work grows mid-conversation, say so and keep going here.
+
+## 1. Before the first question
+
+When `docs/compound-v/` holds specs, plans, pre-flights or runs, dispatch the `compound-v:v-memory` agent with the request's key nouns. Show its hits to the user as evidence, in one to three lines with paths. They are leads, not decisions. When the folder is empty, skip this step.
+
+## 2. The first message
+
+Your first message has exactly two things:
+
+1. One line saying that if they would rather skip the questions, you will make the calls yourself and say what you chose.
+2. One open question that gets them describing a real moment ("Walk me through a customer booking today, from the first call to the visit.").
+
+When they skip: state the significant how-it-gets-made choices in one line, write the spec with every decision marked as your call, and continue from §5. Skipping removes the questions. It never removes the pre-flights, the plan or verification.
+
+## 3. The conversation: one question per message
+
+- **Every message ends with exactly one question**: a single sentence, with no list of example answers hanging off it. The session may be headless, with the owner answering one turn at a time, so never ask two things at once and never wait on anything they cannot do from chat. Do not ask them to open a browser tab, look at a mockup, click or install anything.
+- Use the user's own vocabulary and no process jargon. When they say "you decide", propose something concrete and mark it as your call.
+- A guess they can correct ("I'm guessing walk-ins matter as much as online bookings?") often beats an open question.
+- **Play back** as you go. When one part is clear, describe it back in 150–250 words, mark your guesses as guesses, and end with "What's wrong or missing here?" That is the message's one question.
+
+## 4. Ground to cover: `territory.md`
+
+Read `territory.md` in this directory before your second question. Cover its areas as ground, not as a script. Ask the question that would change the build most and that the conversation has not reached yet:
+
+product and users · data lifecycle (create / change / retire with history / delete; what the operator changes without a developer) · jurisdiction, data and deployment · security and every form · operations · **edge cases**, raised on purpose · how it gets made.
+
+**Ask how deep.** Once the first answers show this is bigger than a small change, ask in one message, with one line per option, **how deep** they want to go:
+
+| Depth | Questions | Adds |
+|---|---|---|
+| quick | only the areas that change what gets built | nothing beyond the tier minimum |
+| standard (default) | every territory area | pre-flights by their conditions (§7) |
+| thorough | every area, plus an edge-case walk per entity | all pre-flights that can run, an offered Codex plan review, the native `/security-review` suggested at the end |
+
+When `.claude/compound-v.json` says `"stance": "cost-aware"`, suggest quick. Depth adds questions and checks. It never removes the full tier's minimum: tests, executable review, real-world check and scope check.
+
+Stop asking when every area is covered (answered, marked as your call, or n.a. with a reason).
+
+## 5. Write the spec
+
+Write `docs/compound-v/specs/YYYY-MM-DD-<topic>.md`, so that a talented builder who cannot reach the owner could plan from it:
+
+- **Request**: the user's original words, verbatim.
+- Intent and the why; users; goals, non-goals and anti-goals.
+- **Decided by the owner**, as they decided it. **My calls**, each marked.
+- Data lifecycle per entity; jurisdiction, data and deployment; security and every form; operations; edge cases.
+- Out of scope (agreed), and what is left to the builder.
+
+Then start the run. Pass the user's **original request** on stdin, never a temp file inside the repo (an untracked file there is a scope violation):
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" run start --tier full \
+  --spec docs/compound-v/specs/<file>.md --request-file - <<'REQUEST'
+<the user's original request, verbatim>
+REQUEST
+```
+
+It prints the run record as JSON. Keep its `id` and pass `--id <id>` on every later `compound-v.py` call in this run, in every skill. The record is written by the CLI only, so never edit `docs/compound-v/runs/` by hand.
+
+## 6. Builder check, then approval
+
+Before asking for approval, dispatch one fresh subagent with `builder-check-prompt.md` (this directory). Tell the user a reviewer will read the spec first and that you may come back once with a few questions. Sort the answers as that file says, and bring only the owner's questions, numbered, in one message.
+
+Then ask for approval: give the spec path and the short list of your calls, and ask "Does this capture what you want, or what should change?"
+
+<HARD-GATE>
+No code, scaffolding, dependency installs or project creation until the user approves the spec. Reading and exploring are fine. An answer that changes the spec means updating the spec and asking again.
+</HARD-GATE>
+
+## 7. Pre-flights: one message, in parallel
+
+After approval: `compound-v.py run stage --id <id> --to preflight`. Then decide which pre-flights run, and dispatch all of them **in one message** (parallel Agent calls). Give each one the spec path, its output path, and the V-memory hits if there were any:
+
+| Agent | Runs when | Writes |
+|---|---|---|
+| `compound-v:domain-expert` | always (≤ 4 searches) | `docs/compound-v/preflight/<date>-<topic>-domain.md` |
+| `compound-v:code-archaeologist` | git tracks source code (check below) | `…-archaeology.md` |
+| `compound-v:doc-validator` | the spec names or implies a dependency, or `thorough` | `…-libraries.md` |
+
+Source check (any output line means code exists):
+
+```bash
+git ls-files | grep -vE '^(docs/|\.claude/)|\.(md|txt|png|jpe?g|gif|svg|webp|ico|pdf)$|^(LICENSE|\.gitignore|\.gitattributes)$' | head -3
+```
+
+No other fan-out: these three, plus the v-memory lookup and the builder check, are all the subagents this stage starts.
+
+When the pre-flights are back, read their files. If an **open** owner question would change what gets built, ask it now (numbered, in one message). Otherwise the plan records it as an assumption.
+
+## 8. Next
+
+Invoke `compound-v:plan` and no other skill.
+
+## Red flags
+
+| Thought | Reality |
+|---|---|
+| "I'll list options to save them effort" | Options steer. Get them describing first. |
+| "Two quick questions in one message is fine" | One question per message. The builder-check round is the only exception. |
+| "They said 'sounds good'" | Approval covers what you showed them. A spec they have not seen is not approved. |
+| "Edge cases will come up in review" | They are cheapest now. Ask about them on purpose. |
+| "Domain research can wait for the plan" | The domain pre-flight is where the production depth comes from. It always runs. |
+
+Adapted in part from Superpowers `brainstorming` (MIT, Jesse Vincent).

@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# tests/test-onboard-rules.sh — the `.claude/rules/` writer's two gates, driven END TO END
-# through the CLI: `compound-v-onboard.py rules-lint` and `rules-plan`.
+# tests/hooks/test-onboard.sh — /compound-v:onboard's toolkit driven END TO END through the
+# CLI: it imports without V-memory, writes its manifest under docs/compound-v/architecture,
+# and the `.claude/rules/` writer's two gates (`rules-lint` and `rules-plan`) hold.
 #
 # WHY THIS FILE EXISTS SEPARATELY FROM --selftest
 #   The script's own --selftest exercises the functions. This file exercises what a caller
-#   gets: the process, its stdout, and its EXIT CODE. /v:onboard's WRITE step gates the
+#   gets: the process, its stdout, and its EXIT CODE. /compound-v:onboard's WRITE step gates the
 #   commit on `rules-lint` exiting 0, so a lint that is right in-process and wrong out of it
 #   would let an unverifiable rule file reach a commit — the one thing this gate exists to
 #   stop. It also asserts the lint on THIS repo's own committed rules, so a rule whose cited
-#   line drifted fails here rather than at someone else's `/v:onboard --refresh`.
+#   line drifted fails here rather than at someone else's `/compound-v:onboard --refresh`.
 #
 # THE PLANTED FAILURES
 #   A gate is only proven by the violation it refuses, so each of these is planted into a
@@ -26,7 +27,7 @@
 
 set -uo pipefail
 
-REPO="$(cd "$(dirname "$0")/.." && pwd -P)"
+REPO="$(cd "$(dirname "$0")/../.." && pwd -P)"
 ONBOARD="$REPO/scripts/compound-v-onboard.py"
 PY="${PY:-python3}"
 # Nobody writes bytecode: a .pyc left beside the scripts is an untracked file the scope gate
@@ -38,6 +39,33 @@ fail=0
 ok()    { pass=$((pass + 1)); printf 'PASS %s\n' "$1"; }
 bad()   { fail=$((fail + 1)); printf 'FAIL %s\n' "$1"; }
 check() { if [ "$2" = "1" ]; then ok "$1"; else bad "$1"; fi; }
+
+# --- v4: onboard stands alone (plan Task 10) -------------------------------------------
+# test_onboard_imports_without_memory_module: V-memory's engine is gone in v4, so the
+# toolkit must load from a scripts/ dir that does not contain compound-v-memory.py.
+_iso="$(mktemp -d)"
+cp "$REPO/scripts/compound-v-onboard.py" "$_iso/"
+check "test_onboard_imports_without_memory_module: --help works without compound-v-memory.py" \
+  "$([ ! -e "$_iso/compound-v-memory.py" ] && "$PY" -I "$_iso/compound-v-onboard.py" --help >/dev/null 2>&1 && echo 1 || echo 0)"
+check "test_onboard_imports_without_memory_module: --selftest passes in isolation" \
+  "$("$PY" -I "$_iso/compound-v-onboard.py" --selftest >/dev/null 2>&1 && echo 1 || echo 0)"
+check "draft-taxonomy subcommand is gone" \
+  "$("$PY" -I "$_iso/compound-v-onboard.py" draft-taxonomy --repo . >/dev/null 2>&1 && echo 0 || echo 1)"
+rm -rf "$_iso"
+
+# The manifest lives under docs/compound-v/architecture, never docs/superpowers.
+_m="$(mktemp -d)"
+( cd "$_m" && git init -q && echo v1 > src.py && git add src.py && git -c user.name=t -c user.email=t@t commit -qm i )
+printf '{"docs": {"docs/compound-v/architecture/architecture.md": ["src.py"]}}' > "$_m/docmap.json"
+"$PY" -I "$ONBOARD" staleness --repo "$_m" --write --docmap "$_m/docmap.json" --quiet >/dev/null 2>&1
+check "staleness --write writes docs/compound-v/architecture/.onboard-manifest.json" \
+  "$([ -f "$_m/docs/compound-v/architecture/.onboard-manifest.json" ] && [ ! -e "$_m/docs/superpowers" ] && echo 1 || echo 0)"
+echo v2 > "$_m/src.py"
+check "staleness reads the new manifest path (cited-changed flagged)" \
+  "$("$PY" -I "$ONBOARD" staleness --repo "$_m" --json 2>/dev/null | grep -q cited-changed && echo 1 || echo 0)"
+rm -rf "$_m"
+check "no docs/superpowers path left in the toolkit" \
+  "$(grep -q 'docs/superpowers\|"docs", "superpowers"' "$ONBOARD" && echo 0 || echo 1)"
 
 # --------------------------------------------------------------------------- #
 # Preconditions — loud, never silently skipped.
