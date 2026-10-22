@@ -64,36 +64,41 @@ instructions.
 Covers, as territory not a script: the product and its users; the data lifecycle (create / change / retire with
 history / delete, what the operator changes without a developer); jurisdiction, data handled and deployment; security
 and every form; operations; **edge cases** as their own topic. For large work it asks **how deep** to go; depth may add
-pre-flights and checks but never removes the tier's minimum (§4.5). Prior decisions are looked up in `docs/` by the cheap
+research and checks but never removes the tier's minimum (§4.5). Prior decisions are looked up in `docs/` by the cheap
 read-only `v-memory` subagent (Haiku) and shown as evidence. Output: a written design in `docs/compound-v/specs/`.
 
-### 4.2 Pre-flights (conditional)
-- **Domain research — always, light**: ≤4 web searches; output "requirement → source → acceptance check", owner facts
-  marked as open.
-- **Archaeology — when git tracks code** (greenfield = only prose, images, `.claude/` and `docs/compound-v/`); co-change
-  and churn as inputs.
-- **Library audit — when the plan adds or changes dependencies.**
-Each writes one file under `docs/compound-v/preflight/`. They run as parallel Sonnet subagents with a turn cap.
+### 4.2–4.4 Build: one fresh builder does research, plan and code (revised 2026-10-22 after the benchmark)
+Evidence: `docs/v4/salon-report.md` and `~/Dev/cv-salon-e2e-kit/V4-RESULTS.md`. Separate pre-flight agents, a plan
+document written by the main agent, a separate builder and a broad independent reviewer cost 2–3× the light flow and
+did not beat it; the same v4 spec built by one agent with the light flow (L1) matched A5 at ~$6.7. Oleg's decision: no
+orchestration — instructions over Claude Code's native mechanisms.
 
-### 4.3 Plan (own skill)
-A detailed plan plus: an **acceptance table** (row = behaviour → check), a **task → model table** (instructions, not
-code), and — only when parallel work is chosen — exclusive file lanes per task and the rule "more than one writer ⇒
-each in its own worktree". The light-flow checklists (`docs/v4/light-flow.md`) are applied here. The plan also writes
-the run record (§4.6). Optional: a plan review by Codex (exists today as `/v:review-plan`).
-
-### 4.4 Build (native)
-Claude Code builds: one agent by default; for large plans its native workflow/subagents with the `model` the plan's
-table names. No emitter, manifest or transport. Tests are written with the code (negative paths, state transitions,
-persisted state, missing config). Parallel writers: see §6.
+After the spec is approved, the main agent dispatches **one fresh `builder` subagent** (it starts from the spec, not the
+conversation). The builder, in its own context:
+1. **Domain research — always, light**: ≤4 web searches; requirement → source → acceptance check; owner facts open.
+2. **Code reading — when git tracks code**: what the change touches and what it could break, existing tests kept green.
+3. **Library check — when it adds or changes a dependency.**
+4. Writes the plan file `docs/compound-v/plans/…`: constraints, the four checklists answered item by item, the
+   **acceptance table** (row = behaviour → check, boundary rows for every number, one row per rule of a "same rules as
+   X" clause), and the `compound-v-plan` block.
+5. Builds with tests written alongside, including the real-browser test for web projects.
+6. For large work only: splits independent parts across native subagents or the Workflow tool, choosing each one's model
+   by significance (Opus for judgment, Sonnet for mechanical work), with exclusive file lanes and worktrees when more
+   than one writes (§6).
+The main agent attaches the plan (`run plan`), and fixes go back to the same builder (cached context), never to a new one.
 
 ### 4.5 Verification — the bar
 
 **Steps.**
 1. **Tests**: the project's own tests pass.
-2. **Executable review** by a second model — Codex if installed, otherwise a fresh Claude subagent (Opus; Fable only by
-   choice) — in an isolated checkout, judged against the **original request** plus the acceptance table and checklists,
-   with structured findings. Then a fix round and a second review. **At most two reviews**; if the second review still
-   has blocker/high findings, the run ends **incomplete** with them recorded, with no third review and no unreviewed "fixed" **(call)**.
+2. **Sharp executable review** by a second model — Codex if installed, otherwise a fresh Claude subagent (Opus) — in an
+   isolated checkout, against the **original request** plus the acceptance table. It runs a fixed set of high-yield
+   probes first (`docs/compound-v/preflight/2026-10-22-v4-reviewer-yield.md` §E: time rules at −1 s / exact / +1 s, "same
+   rules as X" rule by rule, HEAD/OPTIONS/GET on every state-changing route, fake submissions from one source, session
+   replay after logout/rotation/expiry, production start with documented example values, erasure against every copy,
+   normalisers that rewrite valid input, visible text vs stored state), skips the categories that were noise, and has a
+   turn budget (round 1 ≤ 25). Round 2 only re-checks round-1 fixes (≤ 10 turns). **At most two reviews**; a second
+   review with blocker/high findings ends the run **incomplete**.
 3. **Real-world check**: for web apps a real browser submits real forms and the resulting state is checked; for non-web
    projects the binary/API is run for the main flows. curl is not enough for web forms.
 4. **Scope check**: git diff of the run against the plan's lanes (or, without lanes, against the declared change set).
