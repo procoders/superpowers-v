@@ -38,7 +38,9 @@ Work through `## Tasks` in order. For each task:
 
 1. Write the tests named in the plan **with** the code: negative paths (wrong, missing, oversized, replayed, expired input); state transitions, including forbidden ones; persisted state read back after the action, not only the status code; missing or placeholder config (the app refuses to start; no default secret works).
 2. Implement until the task's tests pass, then run the whole `test_cmd`.
-3. Check the task's acceptance rows: each has a passing check under the name the plan gave it.
+3. Check the task's acceptance rows: each has a passing check under the name the plan gave it, and its **assertions prove the row's claim, not a weaker one** (a row "access is lost at once" needs an assertion that the old read is refused).
+4. Test the relationships, not only the operations: for each relationship or state the change adds, write the sequence that crosses it — permission changed → re-read; part of a group erased → traverse the links; preview → a dependency changes → commit.
+5. Use adversarial fixture pairs: two records with the same display label and different ids; the same request when different resources are available; the same form submitted twice.
 
 For web projects, write the Playwright test (`live_cmd`) as its task says, and run it: a browser-only failure found now is cheaper than one found in review.
 

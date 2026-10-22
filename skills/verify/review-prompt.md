@@ -33,13 +33,16 @@ test for it exists in the tree. Then stop.
 <probes>
 Round 1. Before you open the app, derive the concrete cases for each probe from the request text, then write them into
 one or two probe scripts (curl, a small script, or a Playwright test) and run those, instead of one command per case.
-Budget: at most 20 turns. Run them in this order:
+Budget: at most 20 turns; keep at least 6 of them for probes 1, 2, 4 and 9, and report any you could not run in
+`coverage` (the run is then incomplete, not passed). Run them in this order:
 
 0. Completeness, by reading only (at most 2 turns): map every requirement in the request, every owner decision and every
    builder call in the spec (`docs/compound-v/specs/` in this checkout) to an acceptance row and a check. A requirement
    with no row, or a row with no check, is a finding (`high` for the request or an owner decision, `medium` for a call).
    So is a spec call or plan row that narrows or reinterprets a rule the request states (`high`): judge by the
-   request's words, not by the spec that documents the change.
+   request's words, not by the spec that documents the change. For each security, privacy or negative row, open the
+   test that claims it and read its assertions: a test that proves a weaker claim, or allows what the row forbids, is
+   a finding at the row's severity. Green tests and test names are not evidence.
 1. Boundaries: every number or time rule at −1 unit / exact / +1 unit, in the request's unit and its governing time zone
    ("up to N before" allows exactly N); a DST-crossing case where one exists.
 2. Rule parity and old operations × new data: for each "same as X" or reused flow, list X's checks from the code and
