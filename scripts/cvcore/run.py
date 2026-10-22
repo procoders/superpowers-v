@@ -57,7 +57,7 @@ def hash_test_files(repo, globs) -> dict:
 
 
 def start(repo, *, tier, request: str, spec=None, base: str = "HEAD", change_set=None,
-          session_id=None) -> dict:
+          session_id=None, live_cmd=None) -> dict:
     if tier not in TIERS:
         raise RunError(f"tier must be one of {', '.join(TIERS)}")
     require_commit(repo)
@@ -80,7 +80,8 @@ def start(repo, *, tier, request: str, spec=None, base: str = "HEAD", change_set
         "tier": tier, "stage": "brainstorm" if tier == "full" else "build",
         "request": request, "spec": spec, "plan": None, "base_commit": base_commit,
         "change_set": list(change_set or []), "lanes": {},
-        "test_cmd": cfg.get("test_cmd"), "live_cmd": None, "setup_cmd": None, "is_web": False,
+        "test_cmd": cfg.get("test_cmd"), "live_cmd": live_cmd or cfg.get("live_cmd"),
+        "setup_cmd": None, "is_web": bool(cfg.get("is_web", False)),
         "budget_usd": cfg.get("budget_usd", BUDGET_USD), "budget_split": dict(BUDGET_SPLIT),
         "reviewer": cfg.get("reviewer"), "test_globs": list(TEST_GLOBS), "timeout_s": TIMEOUT_S,
         "acceptance_rev": None, "test_files": hash_test_files(repo, TEST_GLOBS),
@@ -129,6 +130,10 @@ def _open_runs(repo) -> list:
                 and rec.get("outcome") is None:
             runs.append(rec)
     return sorted(runs, key=lambda r: (str(r.get("created_at", "")), r["id"]), reverse=True)
+
+
+def open_runs(repo) -> list:
+    return _open_runs(repo)
 
 
 def active(repo, session_id=None):

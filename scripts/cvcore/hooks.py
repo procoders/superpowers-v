@@ -12,10 +12,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import run, usage
-from .escalate import classify_request
-from .gitio import GitError, repo_root, require_commit
+from .escalate import classify_request, is_action
+from .gitio import GitError, git, repo_root, require_commit, zsplit
 from .hud import brief
 from .receipts import note_reviewer_stop, status
+from .scope import changed
 from .snapshot import tree
 
 MAX_ATTEMPTS = 3
@@ -26,6 +27,8 @@ LIGHT_TEXT = "Compound V: small change (light). Make it, then run the compound-v
 SETUP_TEXT = "Compound V is installed but not set up here — run /compound-v:init."
 NO_RUN_TEXT = ("This session got a change request but no Compound V run was started. Start one "
                "with the compound-v skills, or say that no files changed and stop again.")
+EARLY_TEXT = ("Code changed before the plan was attached to run {id}. Attach the plan and move to "
+              "build, or revert, then stop again.")
 CONTINUE_TEXT = ("Continue with /compound-v:verify, or, if you are waiting on the user or a step "
                  "cannot run, say so and stop again — the run will be recorded incomplete.")
 _READ = re.compile(r"^(read|show me|explain|summari[sz]e|look at|cat)\s")
@@ -51,27 +54,55 @@ def _block(reason: str) -> dict:
     return {"decision": "block", "reason": reason}
 
 
+def _code_changed(repo, old_tree: str, new_tree: str) -> list:
+    out = git(repo, "diff-tree", "-r", "--name-only", "-z", "--no-renames", old_tree, new_tree)
+    return [p for p in zsplit(out) if not p.startswith("docs/")]
+
+
+def _attach(repo, rec, sid, transcript, sd: Path) -> None:
+    run.bind(repo, rec, sid)
+    if transcript:
+        rec.setdefault("transcripts", {})[sid] = transcript
+    base = sd / f"baseline-{_key(sid)}"
+    baseline = None
+    if base.exists() and sid not in (rec.get("usage") or {}):
+        try:
+            baseline = float(base.read_text())
+        except ValueError:
+            pass
+    usage.record(repo, rec, sid, transcript, baseline=baseline, save=False)
+    if base.exists() and sid in (rec.get("usage") or {}):
+        base.unlink()
+    run.save(repo, rec)
+
+
 def stop_hook(payload: dict, repo: Path, budget_s=6.0, state_dir=None):
     t0 = time.monotonic()
     try:
         if payload.get("hook_event_name") != "Stop" or not payload.get("session_id"):
             return None
-        sid = payload["session_id"]
+        sid, again = payload["session_id"], bool(payload.get("stop_hook_active"))
         sd = Path(state_dir) if state_dir else default_state_dir()
         change, refused = sd / f"change-{_key(sid)}", sd / f"bypass-refused-{_key(sid)}"
         rec = run.active(repo, sid)
         if rec is None:
-            if change.exists() and not refused.exists():
+            if change.exists() and not refused.exists() and not again \
+                    and _code_changed(repo, change.read_text().strip(), tree(repo)):
                 refused.touch()
                 return _block(NO_RUN_TEXT)
             return None
         if change.exists():
             change.unlink()
-        run.bind(repo, rec, sid)
-        usage.record(repo, rec, sid, payload.get("transcript_path"))
-        if payload.get("stop_hook_active") or rec["stage"] not in ("build", "verify"):
+        _attach(repo, rec, sid, payload.get("transcript_path"), sd)
+        if rec["stage"] in ("brainstorm", "preflight", "plan"):
+            early = [p for p in changed(repo, rec["base_commit"]) if not p.startswith("docs/")]
+            key = f"{tree(repo)}:{rec['stage']}:early-code"
+            if early and not again and key not in rec["stop_refusals"]:
+                rec["stop_refusals"].append(key)
+                run.save(repo, rec)
+                return _block(EARLY_TEXT.format(id=rec["id"]))
             return None
-        if time.monotonic() - t0 > budget_s:
+        if rec["stage"] not in ("build", "verify") or time.monotonic() - t0 > budget_s:
             return None
         s = status(repo, rec)
         if s["outcome"] == "verified":
@@ -80,6 +111,8 @@ def stop_hook(payload: dict, repo: Path, budget_s=6.0, state_dir=None):
             return None
         key = f"{tree(repo)}:{rec['stage']}"
         if key not in rec["stop_refusals"]:
+            if again:
+                return None
             rec["stop_refusals"].append(key)
             run.save(repo, rec)
             return _block(f"Compound V run {rec['id']} is not verified: {_gaps(s)}. "
@@ -126,7 +159,7 @@ def _filtered(text: str):
     low = text.strip().lower()
     if low.startswith("/"):
         return "slash command"
-    if 0 < len(low) <= 200 and low.endswith("?"):
+    if 0 < len(low) <= 200 and low.endswith("?") and not is_action(low):
         return "question"
     if len(low) <= 80 and _READ.match(low) and not re.search(r"[\n;,]| and | then | also ", low):
         return "read instruction"
@@ -151,9 +184,10 @@ def prompt_hook(payload: dict, repo: Path, state_dir: Path):
         sd.mkdir(parents=True, exist_ok=True)
         if not (Path(repo) / CONFIG).exists():
             return SETUP_TEXT if _once(sd / f"notice-{k}") else None
-        unbound = [r for r in run._open_runs(repo) if not r.get("sessions")]
+        transcript = payload.get("transcript_path")
+        unbound = [r for r in run.open_runs(repo) if not r.get("sessions")]
         if unbound and sid:
-            run.bind(repo, unbound[0], sid)
+            _attach(repo, unbound[0], sid, transcript, sd)
         why = _filtered(text)
         if why:
             _log(repo, sid, None, why, len(text))
@@ -162,6 +196,7 @@ def prompt_hook(payload: dict, repo: Path, state_dir: Path):
         if rec and sid in rec.get("sessions", []):
             if (sd / f"change-{k}").exists():
                 (sd / f"change-{k}").unlink()
+            _attach(repo, rec, sid, transcript, sd)
             _log(repo, sid, rec["tier"], "open run", len(text))
             text_brief = brief(repo, sid)
             digest = hashlib.sha256(text_brief.encode()).hexdigest()
@@ -171,8 +206,7 @@ def prompt_hook(payload: dict, repo: Path, state_dir: Path):
             seen.write_text(digest)
             return text_brief
         tier = classify_request(text)
-        if tier:
-            (sd / f"change-{k}").touch()
+        _arm(repo, sd, k, transcript)
         counter = sd / f"nudges-{k}"
         count = len(counter.read_text()) if counter.exists() else 0
         if count >= MAX_ATTEMPTS:
@@ -184,6 +218,17 @@ def prompt_hook(payload: dict, repo: Path, state_dir: Path):
         return LIGHT_TEXT if tier == "light" else FULL_TEXT
     except Exception:
         return None
+
+
+def _arm(repo, sd: Path, k: str, transcript) -> None:
+    (sd / f"change-{k}").write_text(tree(repo))
+    if (sd / f"bypass-refused-{k}").exists():
+        (sd / f"bypass-refused-{k}").unlink()
+    base = sd / f"baseline-{k}"
+    if not base.exists():
+        total = usage.session_total(transcript)
+        if total is not None:
+            base.write_text(repr(total))
 
 
 def session_hook(payload: dict, repo: Path):

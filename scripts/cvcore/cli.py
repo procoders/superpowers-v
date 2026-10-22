@@ -30,7 +30,13 @@ def cmd_checkout(a, repo):
 def _pick(repo, a) -> dict:
     if getattr(a, "id", None):
         return run.load(repo, a.id)
-    rec = run.active(repo, getattr(a, "session", None))
+    if getattr(a, "session", None):
+        rec = run.active(repo, a.session)
+    else:
+        runs = run.open_runs(repo)
+        if len(runs) > 1:
+            raise run.RunError(f"several open runs ({', '.join(r['id'] for r in runs)}): pass --id")
+        rec = runs[0] if runs else None
     if rec is None:
         raise run.RunError("no open run (pass --id)")
     return rec
@@ -42,7 +48,7 @@ def cmd_run(a, repo):
         with src:
             request = src.read().strip()
         rec = run.start(repo, tier=a.tier, request=request, spec=a.spec, base=a.base,
-                        change_set=a.change_set)
+                        change_set=a.change_set, live_cmd=a.live_cmd)
     elif a.action == "stage":
         rec = run.set_stage(repo, _pick(repo, a), a.to)
     elif a.action == "plan":
@@ -148,6 +154,7 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--request-file", required=True)
     s.add_argument("--spec")
     s.add_argument("--base", default="HEAD")
+    s.add_argument("--live-cmd")
     s.add_argument("--change-set", action="append", default=[])
     r.add_parser("stage", parents=[withid]).add_argument("--to", required=True,
                                                          choices=run.STAGES)

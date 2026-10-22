@@ -27,7 +27,8 @@ UI_PATHS = ["**/*.html", "**/*.css", "**/*.{tsx,jsx,vue,svelte}", "**/templates/
 MAX_LINES = 300
 _LIGHT = re.compile(r"typo|опечат|rename|переимен|wording|copy|текст|readme|comment|коммент"
                     r"|bump|version|config value", re.I)
-_FULL = re.compile(r"add|implement|build|create|feature|добав|сделай|реализ", re.I)
+_FULL = re.compile(r"add|implement|build|create|feature|fix|change|update|remove|delete|move"
+                   r"|refactor|добав|сделай|реализ|исправ|измени|удали", re.I)
 _BIG = 1 << 20
 
 
@@ -84,6 +85,10 @@ def classify_diff(repo, base) -> dict:
         reasons.append("unclassifiable")
     return {"tier": "full" if reasons else "light", "reasons": reasons,
             "touches_ui": any(matches(p, UI_PATHS) for p in changed(repo, base))}
+
+
+def is_action(text: str) -> bool:
+    return bool(_LIGHT.search(text) or _FULL.search(text))
 
 
 def classify_request(text: str):

@@ -34,15 +34,22 @@ class HooksTest(unittest.TestCase):
         run.save(self.repo, rec)
         return rec
 
+    def cost(self, total, name="t.jsonl"):
+        t = self.tmp / name
+        with open(t, "a") as f:
+            f.write(json.dumps({"type": "cost-state", "sessionId": "s1", "totalCostUSD": total,
+                                "modelUsage": {}}) + "\n")
+        return str(t)
+
     def stop(self, session="s1", active=False, transcript=None):
         return hooks.stop_hook({"hook_event_name": "Stop", "session_id": session,
                                 "stop_hook_active": active, "transcript_path": transcript,
                                 "cwd": str(self.repo)}, self.repo, state_dir=self.state)
 
-    def prompt(self, text, session="s1"):
+    def prompt(self, text, session="s1", transcript=None):
         return hooks.prompt_hook({"hook_event_name": "UserPromptSubmit", "session_id": session,
-                                  "prompt": text, "cwd": str(self.repo)}, self.repo,
-                                 self.state)
+                                  "prompt": text, "cwd": str(self.repo),
+                                  "transcript_path": transcript}, self.repo, self.state)
 
     def load(self, rec):
         return run.load(self.repo, rec["id"])
@@ -129,11 +136,99 @@ class HooksTest(unittest.TestCase):
 
     def test_stop_blocks_once_when_change_request_but_no_run(self):
         self.assertIn("brainstorm", self.prompt("add a booking page"))
+        self.assertIsNone(self.stop())
+        helpers.write(self.repo, {"src/booking.js": "b\n"})
         out = self.stop()
         self.assertEqual("block", out["decision"])
         self.assertIn("no Compound V run was started", out["reason"])
         self.assertIsNone(self.stop())
         self.assertIsNone(self.stop(session="s2"))
+
+    def test_question_with_action_verb_is_change_request(self):
+        self.assertEqual(hooks.FULL_TEXT, self.prompt("Can you add a login page?"))
+        self.assertIsNone(self.prompt("Why does the login fail?", session="s2"))
+        helpers.write(self.repo, {"src/login.js": "l\n"})
+        self.assertEqual("block", self.stop()["decision"])
+
+    def test_unclassified_change_request_arms_refusal(self):
+        self.assertEqual(hooks.FULL_TEXT, self.prompt("Fix the broken search"))
+        self.assertEqual(hooks.LIGHT_TEXT, self.prompt("fix the wording of the footer",
+                                                       session="s2"))
+        helpers.write(self.repo, {"src/a.js": "search fixed\n"})
+        self.assertEqual("block", self.stop()["decision"])
+        self.assertIsNone(self.stop())
+
+    def test_new_request_rearms_refusal(self):
+        self.prompt("add a booking page")
+        helpers.write(self.repo, {"src/booking.js": "b\n"})
+        self.assertEqual("block", self.stop()["decision"])
+        self.assertIsNone(self.stop())
+        self.prompt("now add a calendar")
+        self.assertIsNone(self.stop())
+        helpers.write(self.repo, {"src/calendar.js": "c\n"})
+        self.assertEqual("block", self.stop()["decision"])
+        self.assertIsNone(self.stop())
+
+    def test_planning_only_turns_never_refuse(self):
+        self.prompt("add a booking page")
+        helpers.write(self.repo, {"docs/notes.md": "questions\n"})
+        self.assertIsNone(self.stop())
+        rec = self.start(stage="brainstorm")
+        helpers.write(self.repo, {"docs/compound-v/specs/s.md": "spec\n"})
+        self.assertIsNone(self.stop())
+        self.assertIsNone(self.load(rec)["outcome"])
+
+    def test_early_code_change_refused_once(self):
+        rec = self.start(stage="plan")
+        helpers.write(self.repo, {"src/a.js": "too early\n"})
+        out = self.stop()
+        self.assertEqual("block", out["decision"])
+        self.assertIn(f"Code changed before the plan was attached to run {rec['id']}",
+                      out["reason"])
+        self.assertIsNone(self.stop())
+        self.assertIsNone(self.stop(active=True))
+        self.assertIsNone(self.load(rec)["outcome"])
+
+    def test_stop_hook_active_records_outcome(self):
+        rec = self.start()
+        self.verify(rec)
+        self.assertIsNone(self.stop(active=True))
+        self.assertEqual("verified", self.load(rec)["outcome"])
+        rec2 = self.start(session="s2")
+        self.assertEqual("block", self.stop(session="s2")["decision"])
+        self.assertIsNone(self.stop(session="s2", active=True))
+        self.assertEqual("incomplete", self.load(rec2)["outcome"])
+
+    def test_hooks_record_transcript_path(self):
+        rec = self.start(session=None)
+        t = self.cost(1.0)
+        self.prompt("please continue", transcript=t)
+        self.assertEqual({"s1": t}, self.load(rec)["transcripts"])
+
+    def test_prompt_records_baseline_before_work(self):
+        t = self.cost(3.0)
+        self.prompt("add a booking page", transcript=t)
+        self.cost(4.0)
+        rec = self.start(session=None)
+        self.cost(5.5)
+        self.prompt("yes, go on", transcript=t)
+        self.assertAlmostEqual(2.5, receipts.usage.run_cost(self.load(rec)))
+
+    def test_first_turn_baseline_is_zero(self):
+        t = self.tmp / "fresh.jsonl"
+        t.write_text("")
+        self.prompt("add a booking page", transcript=str(t))
+        rec = self.start(session=None)
+        self.cost(1.25, name="fresh.jsonl")
+        self.stop(transcript=str(t))
+        self.assertAlmostEqual(1.25, receipts.usage.run_cost(self.load(rec)))
+
+    def test_status_refreshes_usage(self):
+        rec = self.start(session=None)
+        t = self.cost(1.0)
+        self.prompt("please continue", transcript=t)
+        self.cost(3.0)
+        self.assertEqual(2.0, receipts.status(self.repo, self.load(rec))["budget"]["spent"])
 
     def test_change_marker_cleared_once_run_bound(self):
         self.prompt("add a booking page")

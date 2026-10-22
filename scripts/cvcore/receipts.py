@@ -16,6 +16,7 @@ from .escalate import classify_diff
 from .run import RunError
 from .scope import check
 from .snapshot import ignored_env_digest, tree
+from . import usage
 from .usage import run_cost
 
 # Inside the repo's git dir: the Claude Code sandbox lets commands write there, not to ~/.claude.
@@ -239,6 +240,8 @@ def budget(rec) -> dict:
 
 
 def status(repo, rec) -> dict:
+    for sid, path in (rec.get("transcripts") or {}).items():
+        usage.record(repo, rec, sid, path)
     req = required(rec, repo)
     cur = _current(repo, rec)
     out = {"missing": [], "stale": [], "failed": [], "waived": [], "errors": []}

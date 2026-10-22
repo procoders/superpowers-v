@@ -58,15 +58,30 @@ def _stage_key(stage: str) -> str:
     return "before_build" if stage in BEFORE_BUILD else stage
 
 
-def record(repo, rec, session_id, transcript_path) -> dict:
+def session_total(transcript_path, max_tail_bytes=8_000_000):
+    cs = last_cost_state(Path(transcript_path), max_tail_bytes) if transcript_path else None
+    if cs is not None:
+        return cs["total_usd"]
+    try:
+        # A transcript shorter than the tail scan with no cost-state has not finished a turn.
+        return 0.0 if Path(transcript_path).stat().st_size <= max_tail_bytes else None
+    except (OSError, TypeError):
+        return None
+
+
+def record(repo, rec, session_id, transcript_path, baseline=None, save=True) -> dict:
     cs = last_cost_state(Path(transcript_path)) if transcript_path and session_id else None
     if cs is None:
         return rec
     total, u = cs["total_usd"], rec.setdefault("usage", {}).get(session_id)
     if u is None:
-        rec["usage"][session_id] = {"start_usd": total, "last_usd": total,
-                                    "unknown_cost": cs["unknown_cost"]}
-    else:
+        u = rec["usage"][session_id] = {"start_usd": total if baseline is None else baseline,
+                                        "last_usd": total, "unknown_cost": cs["unknown_cost"]}
+        if baseline is not None and total > baseline:
+            by = rec.setdefault("usage_by_stage", {})
+            key = _stage_key(rec["stage"])
+            by[key] = round(by.get(key, 0.0) + total - baseline, 6)
+    elif total != u["last_usd"] or cs["unknown_cost"] and not u.get("unknown_cost"):
         if total < u["last_usd"]:
             u["start_usd"] -= u["last_usd"]
             delta = total
@@ -77,7 +92,10 @@ def record(repo, rec, session_id, transcript_path) -> dict:
         by[key] = round(by.get(key, 0.0) + delta, 6)
         u["last_usd"] = total
         u["unknown_cost"] = u.get("unknown_cost") or cs["unknown_cost"]
-    run.save(repo, rec)
+    else:
+        return rec
+    if save:
+        run.save(repo, rec)
     return rec
 
 

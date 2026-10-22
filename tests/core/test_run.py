@@ -106,6 +106,26 @@ class RunTest(unittest.TestCase):
         run.bind(self.repo, c, "s3")
         self.assertEqual(["s3"], run.load(self.repo, c["id"])["sessions"])
 
+    def test_light_start_reads_live_cmd_from_config(self):
+        helpers.write(self.repo, {".claude/compound-v.json": json.dumps(
+            {"test_cmd": "true", "live_cmd": "npx playwright test", "is_web": True})})
+        rec = run.start(self.repo, tier="light", request="copy")
+        self.assertEqual(("npx playwright test", True), (rec["live_cmd"], rec["is_web"]))
+        rec = run.start(self.repo, tier="light", request="copy", live_cmd="make smoke")
+        self.assertEqual("make smoke", rec["live_cmd"])
+        helpers.write(self.repo, {"req.txt": "copy"})
+        r = helpers.cli(self.repo, "run", "start", "--tier", "light", "--request-file", "req.txt",
+                        "--live-cmd", "make e2e")
+        self.assertEqual("make e2e", json.loads(r.stdout)["live_cmd"])
+
+    def test_cli_pick_refuses_ambiguous(self):
+        a = run.start(self.repo, tier="light", request="a")
+        run.start(self.repo, tier="light", request="b")
+        r = helpers.cli(self.repo, "run", "show")
+        self.assertEqual(2, r.returncode)
+        self.assertIn("pass --id", r.stderr)
+        self.assertEqual(0, helpers.cli(self.repo, "run", "show", "--id", a["id"]).returncode)
+
     def test_closed_run_not_active(self):
         rec = run.start(self.repo, tier="light", request="x")
         rec["outcome"] = "verified"
