@@ -1,0 +1,254 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+from . import run, usage
+from .escalate import classify_request
+from .gitio import GitError, repo_root, require_commit
+from .hud import brief
+from .receipts import status
+from .snapshot import tree
+
+MAX_ATTEMPTS = 3
+CONFIG = ".claude/compound-v.json"
+FULL_TEXT = ("Compound V: this is a change request (full). "
+             "Start with the compound-v:brainstorm skill.")
+LIGHT_TEXT = "Compound V: small change (light). Make it, then run the compound-v:verify skill."
+SETUP_TEXT = "Compound V is installed but not set up here — run /compound-v:init."
+NO_RUN_TEXT = ("This session got a change request but no Compound V run was started. Start one "
+               "with the compound-v skills, or say that no files changed and stop again.")
+CONTINUE_TEXT = ("Continue with /compound-v:verify, or, if you are waiting on the user or a step "
+                 "cannot run, say so and stop again — the run will be recorded incomplete.")
+_READ = re.compile(r"^(read|show me|explain|summari[sz]e|look at|cat)\s")
+_GREETING = re.compile(
+    r"^(hi|hello|hey|yo|ok|okay|k|thanks|thank you|thx|ty|yes|yep|no|nope|sure|cool|great|nice"
+    r"|got it|good|perfect|done|привет|спасибо|ок|окей|да|нет|понял|отлично|хорошо|супер)"
+    r"( there| a lot| so much| you)?$")
+WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+
+
+def default_state_dir() -> Path:
+    d = Path(os.environ.get("CV_STATE_DIR") or
+             Path(tempfile.gettempdir()) / f"compound-v-{os.getuid()}")
+    d.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return d
+
+
+def _key(session) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]", "_", str(session or "none"))[:80]
+
+
+def _block(reason: str) -> dict:
+    return {"decision": "block", "reason": reason}
+
+
+def stop_hook(payload: dict, repo: Path, budget_s=6.0, state_dir=None):
+    t0 = time.monotonic()
+    try:
+        if payload.get("hook_event_name") != "Stop" or not payload.get("session_id"):
+            return None
+        sid = payload["session_id"]
+        sd = Path(state_dir) if state_dir else default_state_dir()
+        change, refused = sd / f"change-{_key(sid)}", sd / f"bypass-refused-{_key(sid)}"
+        rec = run.active(repo, sid)
+        if rec is None:
+            if change.exists() and not refused.exists():
+                refused.touch()
+                return _block(NO_RUN_TEXT)
+            return None
+        if change.exists():
+            change.unlink()
+        run.bind(repo, rec, sid)
+        usage.record(repo, rec, sid, payload.get("transcript_path"))
+        if payload.get("stop_hook_active") or rec["stage"] not in ("build", "verify"):
+            return None
+        if time.monotonic() - t0 > budget_s:
+            return None
+        s = status(repo, rec)
+        if s["outcome"] == "verified":
+            rec.update(outcome="verified", stage="done")
+            run.save(repo, rec)
+            return None
+        key = f"{tree(repo)}:{rec['stage']}"
+        if key not in rec["stop_refusals"]:
+            rec["stop_refusals"].append(key)
+            run.save(repo, rec)
+            return _block(f"Compound V run {rec['id']} is not verified: {_gaps(s)}. "
+                          + CONTINUE_TEXT)
+        rec["outcome"] = "failed" if s["failed"] else "incomplete"
+        run.save(repo, rec)
+        return None
+    except Exception:
+        return None
+
+
+def _gaps(s: dict) -> str:
+    parts = [f"{k} {', '.join(s[k])}" for k in ("missing", "stale", "failed", "errors") if s[k]]
+    if s.get("rounds_exhausted"):
+        parts.append("review rounds exhausted with findings open")
+    if s["budget"].get("exceeded"):
+        parts.append("budget exceeded")
+    return "; ".join(parts) or s["outcome"]
+
+
+def _log(repo, sid, tier, reason, chars) -> None:
+    path = Path(repo) / run.RUNS / "triage.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "session": sid,
+           "tier": tier, "reason": reason, "prompt_chars": chars}
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row) + "\n")
+
+
+def _filtered(text: str):
+    low = text.strip().lower()
+    if low.startswith("/"):
+        return "slash command"
+    if 0 < len(low) <= 200 and low.endswith("?"):
+        return "question"
+    if len(low) <= 80 and _READ.match(low) and not re.search(r"[\n;,]| and | then | also ", low):
+        return "read instruction"
+    if _GREETING.match(re.sub(r"[\s!.,)(]+$", "", low)):
+        return "greeting"
+    return None
+
+
+def _once(path: Path) -> bool:
+    if path.exists():
+        return False
+    path.touch()
+    return True
+
+
+def prompt_hook(payload: dict, repo: Path, state_dir: Path):
+    try:
+        if payload.get("hook_event_name") not in (None, "", "UserPromptSubmit"):
+            return None
+        sid, text = payload.get("session_id"), str(payload.get("prompt") or "")
+        sd, k = Path(state_dir), _key(sid)
+        sd.mkdir(parents=True, exist_ok=True)
+        if not (Path(repo) / CONFIG).exists():
+            return SETUP_TEXT if _once(sd / f"notice-{k}") else None
+        unbound = [r for r in run._open_runs(repo) if not r.get("sessions")]
+        if unbound and sid:
+            run.bind(repo, unbound[0], sid)
+        why = _filtered(text)
+        if why:
+            _log(repo, sid, None, why, len(text))
+            return None
+        rec = run.active(repo, sid) if sid else None
+        if rec and sid in rec.get("sessions", []):
+            if (sd / f"change-{k}").exists():
+                (sd / f"change-{k}").unlink()
+            _log(repo, sid, rec["tier"], "open run", len(text))
+            text_brief = brief(repo, sid)
+            digest = hashlib.sha256(text_brief.encode()).hexdigest()
+            seen = sd / f"brief-{k}"
+            if seen.exists() and seen.read_text() == digest:
+                return None
+            seen.write_text(digest)
+            return text_brief
+        tier = classify_request(text)
+        if tier:
+            (sd / f"change-{k}").touch()
+        counter = sd / f"nudges-{k}"
+        count = len(counter.read_text()) if counter.exists() else 0
+        if count >= MAX_ATTEMPTS:
+            _log(repo, sid, tier or "full", "nudges spent", len(text))
+            return None
+        with open(counter, "a") as f:
+            f.write("x")
+        _log(repo, sid, tier or "full", "classified" if tier else "unclassified", len(text))
+        return LIGHT_TEXT if tier == "light" else FULL_TEXT
+    except Exception:
+        return None
+
+
+def session_hook(payload: dict, repo: Path):
+    try:
+        lines = [brief(repo, payload.get("session_id"))]
+        manifest = Path(repo) / "docs/compound-v/architecture/.onboard-manifest.json"
+        if manifest.exists():
+            lines.append(_staleness(repo))
+        text = "\n".join(x for x in lines if x)
+        return text or None
+    except Exception:
+        return None
+
+
+def _staleness(repo) -> str:
+    script = Path(__file__).resolve().parents[1] / "compound-v-onboard.py"
+    try:
+        out = subprocess.run([sys.executable, str(script), "staleness", "--quiet"], cwd=str(repo),
+                             capture_output=True, text=True, timeout=3).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if out == "unregistered":
+        return ("The onboard manifest registers no cited files, so doc staleness cannot be "
+                "checked — run /compound-v:onboard --refresh.")
+    if out.isdigit() and int(out) > 0:
+        return (f"{out} generated doc(s) cite files that changed since they were verified — "
+                "run /compound-v:onboard --refresh.")
+    return ""
+
+
+def guard_hook(payload: dict):
+    try:
+        if payload.get("tool_name") not in WRITE_TOOLS:
+            return None
+        ti = payload.get("tool_input") or {}
+        target = ti.get("file_path") or ti.get("notebook_path")
+        if not target:
+            return None
+        cwd = payload.get("cwd") or os.getcwd()
+        try:
+            root = str(repo_root(cwd))
+        except GitError:
+            root = cwd
+        full = os.path.realpath(os.path.join(cwd, target))
+        rel = os.path.relpath(full, os.path.realpath(root)).replace(os.sep, "/")
+        if not rel.startswith(run.RUNS + "/"):
+            return None
+        return {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": "Run records are written by scripts/compound-v.py only."}}
+    except Exception:
+        return None
+
+
+def _context(event: str, text):
+    if not text:
+        return None
+    return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
+
+
+def main(event: str) -> int:
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+        if not isinstance(payload, dict):
+            return 0
+        if event == "guard":
+            out = guard_hook(payload)
+        else:
+            repo = repo_root(payload.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or ".")
+            require_commit(repo)
+            if event == "stop":
+                out = stop_hook(payload, repo)
+            elif event == "prompt":
+                out = _context("UserPromptSubmit", prompt_hook(payload, repo, default_state_dir()))
+            else:
+                out = _context("SessionStart", session_hook(payload, repo))
+        if out:
+            print(json.dumps(out, ensure_ascii=False))
+    except Exception:
+        pass
+    return 0

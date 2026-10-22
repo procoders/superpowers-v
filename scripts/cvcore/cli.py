@@ -208,6 +208,10 @@ ERRORS = (GitError, run.RunError, review.ReviewError, snapshot.SnapshotError, OS
 
 
 def main(argv=None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["hook"]:
+        from . import hooks
+        return hooks.main(argv[1] if len(argv) > 1 else "")
     a = parser().parse_args(argv)
     try:
         rc = a.fn(a, repo_root(a.repo))

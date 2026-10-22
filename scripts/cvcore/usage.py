@@ -5,7 +5,7 @@ from pathlib import Path
 
 from . import run
 
-NEEDLE = b'"type":"cost-state"'
+NEEDLE = b'"cost-state"'
 BLOCK = 1 << 20
 BEFORE_BUILD = ("brainstorm", "preflight", "plan")
 
