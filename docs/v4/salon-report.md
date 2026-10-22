@@ -106,3 +106,18 @@ The light flow wins brownfield too, at half the time and cost; the parallel wave
 
 Raw data: `logs/cv-salon-run-{A,A2,B}/` (per-turn JSON, wall.txt, usage-*.json), `blind/`, `blind3/` (verdicts,
 mappings in `blind-mapping.txt`, `blind3-mapping.txt`).
+
+## v4 rounds G14–G15 and P1 — product/UX judges (2026-10-22; data: kit `V4-RESULTS.md`, sets ux-r1…r7, bv4-r8-g1, bv4-r9-g1)
+
+Costs are the CLI's estimate (last turn per session). UX = `RUBRIC-ux.md`, blind PM + designer judging screenshots and flows.
+
+| Build | Cost | Rubric | UX Codex | UX Gemini |
+|---|---|---|---|---|
+| A, plain one prompt | $1.31 | 60 | 50, 50, 50, 50 | 35, 35, 42 |
+| P1, plain + requirements + developer rounds | $2.27 | 61, 61 | 63, 63, 60 | 74, 63 |
+| G13, v4 (bench denied reads of the plugin's checklists) | $8.1–9.2 | 74–83, 79 | 77, 74, 74, 65 | 82, 77, 77 |
+| G15, v4 at 873709c, reads allowed | $11.13 | 83 | 77 | 80 |
+| G14, v4 + design skill (893b541), reads allowed | $10.60 | 84, 80 | 83, 83 | 100, 100 |
+
+G14 vs G15 in the same sets: +6 (Codex) and +20 (Gemini) UX, rubric level, cost within noise. G14's review-round finding
+(failures from many networks locked out the correct login) became the S6 lockout rule.

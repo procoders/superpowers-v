@@ -61,7 +61,9 @@ criterion. Evidence and the full mapping: `docs/compound-v/preflight/2026-10-22-
   `Sec-Fetch-Site` check with an `Origin` fallback; `Origin: null` is never trusted. Proved in a real browser under the
   deployed `Referrer-Policy`. *A 3.5.1; CSRF CS*
 - **S6** Abuse limits on login, every public create and every code or token lookup, keyed by source network (an IPv6 /64,
-  not one address) and by target; the client IP is read only from a trusted proxy. *A 2.4.1, 6.3.1, 4.1.3, 15.3.4; API6*
+  not one address) and by target; the client IP is read only from a trusted proxy. A per-target limit slows failures
+  down progressively and never refuses the correct credentials from a source network that has not failed itself:
+  locking an account through other people's failures is a denial of service. *A 2.4.1, 6.3.1, 4.1.3, 15.3.4; API6*
 - **S7** Input validated server-side for type, length and range, with size limits answered 413/414/431; malformed input
   gets a 4xx with a generic message, never a 500; free text accepts every script (joiners and combining marks included)
   and rejects only control characters. *A 2.2.1, 2.2.2, 16.5.1, 16.5.4; Input Validation CS*

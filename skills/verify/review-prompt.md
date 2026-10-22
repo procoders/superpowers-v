@@ -54,7 +54,8 @@ Budget: at most 20 turns; keep at least 6 of them for probes 1, 2, 4 and 9, and 
    change or delete what it references between its steps (as another user or the operator), then finish it: a 500 or a
    partial write is a finding.
 3. Abuse with rotating identity: many creates from one source with invented identifiers; addresses inside one IPv6 /64;
-   a spoofed `X-Forwarded-For`; one code or token guessed from many sources.
+   a spoofed `X-Forwarded-For`; one code or token guessed from many sources; after failures from many networks, the
+   correct login from a fresh network still succeeds.
 4. Method and byte sweep: every route × GET / HEAD / OPTIONS / an unknown verb, then bad %-encoding, multibyte tokens, a
    wrong content type, hundreds of parameters, an oversized body. Then each state-changing form, public ones included:
    a cross-site POST without its token is refused, and the same form submitted twice creates one result.
