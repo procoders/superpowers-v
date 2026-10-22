@@ -31,6 +31,20 @@ def zsplit(out: bytes) -> list:
     return [os.fsdecode(x) for x in out.split(b"\0") if x]
 
 
+def worktrees(repo) -> list:
+    try:
+        entries = git(repo, "worktree", "list", "--porcelain", "-z").split(b"\0")
+    except GitError:
+        entries = git(repo, "worktree", "list", "--porcelain").split(b"\n")
+    out = []
+    for e in (os.fsdecode(x) for x in entries):
+        if e.startswith("worktree "):
+            out.append({"path": e[len("worktree "):], "branch": None})
+        elif e.startswith("branch ") and out:
+            out[-1]["branch"] = e[len("branch "):]
+    return out
+
+
 def repo_root(path) -> Path:
     try:
         out = git(path, "rev-parse", "--show-toplevel")

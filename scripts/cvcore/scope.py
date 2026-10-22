@@ -5,10 +5,13 @@ import os
 import re
 
 from .gitio import git, zsplit
-from .snapshot import CANON, WORKTREES
+from .snapshot import CANON, excludes, worktree_roots
 
 EVIDENCE = "docs/compound-v"
-EXCLUDES = (f":(exclude){EVIDENCE}", f":(exclude){WORKTREES}")
+
+
+def skipped(repo) -> list:
+    return [f":(exclude){EVIDENCE}", *excludes(worktree_roots(repo))]
 
 
 def _braces(glob: str) -> list:
@@ -49,13 +52,13 @@ def matches(path: str, globs) -> bool:
 
 def untracked(repo) -> list:
     return zsplit(git(repo, *CANON, "ls-files", "-z", "--others", "--exclude-standard",
-                      "--", ".", *EXCLUDES))
+                      "--", ".", *skipped(repo)))
 
 
 def changed(repo, base, head=None) -> list:
     revs = [base, head] if head else [base]
     diff = set(zsplit(git(repo, *CANON, "diff", "--name-only", "-z", "--no-renames",
-                          "--no-ext-diff", *revs, "--", ".", *EXCLUDES)))
+                          "--no-ext-diff", *revs, "--", ".", *skipped(repo))))
     return sorted(diff if head else diff | set(untracked(repo)))
 
 

@@ -44,8 +44,13 @@ class SnapshotTest(unittest.TestCase):
 
     def test_evidence_dir_excluded(self):
         t0 = snapshot.tree(self.repo)
-        helpers.write(self.repo, {"docs/compound-v/runs/x.json": "{}"})
+        helpers.write(self.repo, {"docs/compound-v/runs/20261022-101500-x.json": "{}",
+                                  "docs/compound-v/runs/20261022-101500-x-review-1.json": "{}",
+                                  "docs/compound-v/runs/triage.log": "{}\n"})
         self.assertEqual(t0, snapshot.tree(self.repo))
+        helpers.write(self.repo, {"docs/compound-v/runs/runtime.py": "value = 1\n"})
+        self.assertNotEqual(t0, snapshot.tree(self.repo))
+        (self.repo / "docs/compound-v/runs/runtime.py").unlink()
         helpers.write(self.repo, {"docs/compound-v/plans/p.md": "plan\n"})
         self.assertNotEqual(t0, snapshot.tree(self.repo))
 
@@ -86,6 +91,35 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(tid, snapshot.materialize(self.repo, tid, dest))
         self.assertTrue((dest / "a b.txt").is_file())
         self.assertTrue((dest / "বুকিং.txt").is_file())
+
+    def test_force_added_ignored_file_in_snapshot(self):
+        helpers.write(self.repo, {".gitignore": "*.py\n", "new.py": "assert True\n"})
+        helpers.sh(self.repo, "add", "-f", "new.py")
+        t0 = snapshot.tree(self.repo)
+        helpers.write(self.repo, {"new.py": "assert False\n"})
+        self.assertNotEqual(t0, snapshot.tree(self.repo))
+        helpers.sh(self.repo, "update-index", "--assume-unchanged", "src/b.js")
+        t1 = snapshot.tree(self.repo)
+        helpers.write(self.repo, {"src/b.js": "changed\n"})
+        self.assertNotEqual(t1, snapshot.tree(self.repo))
+
+    def test_unregistered_worktree_dir_counts(self):
+        helpers.write(self.repo, {".claude/worktrees/x/runtime.py": "v = 1\n"})
+        t0 = snapshot.tree(self.repo)
+        helpers.write(self.repo, {".claude/worktrees/x/runtime.py": "v = 0\n"})
+        self.assertNotEqual(t0, snapshot.tree(self.repo))
+
+    def test_submodule_clear_error(self):
+        sub = helpers.make_repo(self.tmp / "sub", {"lib.py": "pass\n"})
+        helpers.sh(self.repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+                   str(sub), "vendor")
+        helpers.commit_all(self.repo)
+        with self.assertRaises(snapshot.SnapshotError) as cm:
+            snapshot.materialize(self.repo, snapshot.tree(self.repo), self.tmp / "d")
+        self.assertIn("submodules are not supported", str(cm.exception))
+        r = helpers.cli(self.repo, "checkout", "--dest", str(self.tmp / "d2"))
+        self.assertEqual(2, r.returncode)
+        self.assertIn("submodules are not supported", r.stderr)
 
     def test_snapshot_requires_commit(self):
         bare = helpers.make_repo(self.tmp / "empty", commit=False)

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from . import run
 from .receipts import execute
-from .snapshot import materialize, tree
+from .snapshot import SnapshotError, materialize, tree, verify_tracked
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = ROOT / "schemas/review-findings.schema.json"
@@ -102,21 +102,33 @@ def _codex(cwd, out_path: Path, prompt_text: str, sandbox: str, model, timeout_s
     return data
 
 
+def _unchanged(repo, tid, dest) -> None:
+    changed = verify_tracked(repo, tid, dest)
+    if changed:
+        raise ReviewError("setup or reviewer changed source: " + ", ".join(changed[:10]))
+
+
 def codex(repo, rec, out_path, *, model=MODEL, timeout_s=1200) -> Path:
-    tid, t0 = tree(repo), time.monotonic()
+    tid, t0, ok = tree(repo), time.monotonic(), False
     try:
         with tempfile.TemporaryDirectory(prefix="cv-review-") as tmp:
             dest = Path(tmp) / "checkout"
-            materialize(repo, tid, dest)
+            try:
+                materialize(repo, tid, dest)
+            except SnapshotError as e:
+                raise ReviewError(str(e)) from None
             if rec.get("setup_cmd"):
                 rc, tail, _ = execute(rec["setup_cmd"], dest, timeout_s)
                 if rc != 0:
                     raise ReviewError(f"setup_cmd exited {rc}: {tail[-300:]}")
+            _unchanged(repo, tid, dest)
             data = _codex(dest, out_path, prompt(repo, rec, tid), "workspace-write", model,
                           timeout_s)
+            _unchanged(repo, tid, dest)
+            ok = True
     finally:
         rec.setdefault("external", {}).setdefault("codex", []).append({
-            "duration_s": round(time.monotonic() - t0, 3),
+            "duration_s": round(time.monotonic() - t0, 3), "tree": tid, "ok": ok,
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
         run.save(repo, rec)
     data["snapshot"] = tid

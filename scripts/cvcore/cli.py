@@ -20,6 +20,10 @@ def cmd_snapshot(a, repo):
 def cmd_checkout(a, repo):
     dest = Path(a.dest).resolve()
     tid = snapshot.materialize(repo, snapshot.tree(repo), dest)
+    try:
+        receipts.note_checkout(repo, _pick(repo, a), tid, dest)
+    except run.RunError:
+        pass
     _out({"tree": tid, "dest": str(dest)})
 
 
@@ -132,13 +136,13 @@ def parser() -> argparse.ArgumentParser:
     common.add_argument("--repo", default=".")
     p = argparse.ArgumentParser(prog="compound-v.py")
     sub = p.add_subparsers(dest="cmd", required=True)
+    withid = argparse.ArgumentParser(add_help=False, parents=[common])
+    withid.add_argument("--id")
     sub.add_parser("snapshot", parents=[common]).set_defaults(fn=cmd_snapshot)
-    c = sub.add_parser("checkout", parents=[common])
+    c = sub.add_parser("checkout", parents=[withid])
     c.add_argument("--dest", required=True)
     c.set_defaults(fn=cmd_checkout)
     r = sub.add_parser("run").add_subparsers(dest="action", required=True)
-    withid = argparse.ArgumentParser(add_help=False, parents=[common])
-    withid.add_argument("--id")
     s = r.add_parser("start", parents=[common])
     s.add_argument("--tier", required=True, choices=run.TIERS)
     s.add_argument("--request-file", required=True)
@@ -175,7 +179,7 @@ def parser() -> argparse.ArgumentParser:
     cp.add_argument("--model", default=review.MODEL)
     rr = rv.add_parser("record", parents=[withid])
     rr.add_argument("--findings", required=True)
-    rr.add_argument("--reviewer", required=True, choices=("codex", "claude"))
+    rr.add_argument("--reviewer", required=True, choices=("claude",))
     for x in (co, cp, rr):
         x.set_defaults(fn=cmd_review)
     wv = sub.add_parser("waive", parents=[withid])

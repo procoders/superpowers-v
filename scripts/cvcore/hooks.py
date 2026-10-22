@@ -15,7 +15,7 @@ from . import run, usage
 from .escalate import classify_request
 from .gitio import GitError, repo_root, require_commit
 from .hud import brief
-from .receipts import status
+from .receipts import note_reviewer_stop, status
 from .snapshot import tree
 
 MAX_ATTEMPTS = 3
@@ -89,6 +89,19 @@ def stop_hook(payload: dict, repo: Path, budget_s=6.0, state_dir=None):
         return None
     except Exception:
         return None
+
+
+def subagent_stop_hook(payload: dict, repo: Path):
+    try:
+        kind = str(payload.get("agent_type") or "")
+        if payload.get("hook_event_name") != "SubagentStop" or kind.split(":")[-1] != "reviewer":
+            return None
+        rec = run.active(repo, payload.get("session_id"))
+        if rec is not None:
+            note_reviewer_stop(repo, rec, payload.get("agent_id"), kind)
+    except Exception:
+        pass
+    return None
 
 
 def _gaps(s: dict) -> str:
@@ -243,6 +256,8 @@ def main(event: str) -> int:
             require_commit(repo)
             if event == "stop":
                 out = stop_hook(payload, repo)
+            elif event == "subagent":
+                out = subagent_stop_hook(payload, repo)
             elif event == "prompt":
                 out = _context("UserPromptSubmit", prompt_hook(payload, repo, default_state_dir()))
             else:

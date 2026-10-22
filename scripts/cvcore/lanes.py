@@ -3,26 +3,28 @@ from __future__ import annotations
 import os
 
 from . import run
-from .gitio import GitError, git, resolve
+from .gitio import GitError, git, resolve, worktrees, zsplit
 from .receipts import execute
 from .run import RunError
-from .scope import EXCLUDES, check
+from .scope import check, skipped
 
 
-def _worktrees(repo) -> dict:
-    trees, path = {}, None
-    out = git(repo, "worktree", "list", "--porcelain").decode("utf-8", "surrogateescape")
-    for line in out.split("\n"):
-        if line.startswith("worktree "):
-            path = line[len("worktree "):]
-        elif line.startswith("branch ") and path:
-            trees[line[len("branch "):]] = path
-    return trees
-
-
-def _dirty(path, extra=()) -> bool:
+def _dirty(path) -> bool:
     return bool(git(path, "status", "--porcelain", "-z", "--untracked-files=all", "--", ".",
-                    *EXCLUDES, *extra).strip(b"\0"))
+                    *skipped(path)).strip(b"\0"))
+
+
+def _merging(repo) -> bool:
+    try:
+        git(repo, "rev-parse", "-q", "--verify", "MERGE_HEAD")
+        return True
+    except GitError:
+        return False
+
+
+def _abort(repo) -> None:
+    if _merging(repo):
+        git(repo, "merge", "--abort", check=False)
 
 
 def _refuse(repo, rec, task, branch, reason, violations=()) -> dict:
@@ -42,12 +44,11 @@ def finish(repo, rec, task, branch) -> dict:
         return {"status": "merged", "reason": "already merged", "violations": []}
     tip = resolve(repo, branch)
     root = os.path.realpath(str(repo))
-    trees = _worktrees(repo)
-    inside = [os.path.relpath(os.path.realpath(p), root) for p in trees.values()
-              if os.path.realpath(p).startswith(root + os.sep)]
-    if _dirty(repo, [f":(exclude){p}" for p in inside]):
+    if _merging(repo):
+        return _refuse(repo, rec, task, branch, "a merge is already in progress")
+    if _dirty(repo) or git(repo, "diff", "--cached", "--name-only", "-z").strip(b"\0"):
         return _refuse(repo, rec, task, branch, "main tree dirty")
-    wt = trees.get(f"refs/heads/{branch}")
+    wt = next((w["path"] for w in worktrees(repo) if w["branch"] == f"refs/heads/{branch}"), None)
     if wt and os.path.realpath(wt) != root and _dirty(wt):
         return _refuse(repo, rec, task, branch, "interrupted: uncommitted changes")
     base = git(repo, "merge-base", "HEAD", tip).decode().strip()
@@ -56,19 +57,24 @@ def finish(repo, rec, task, branch) -> dict:
     res = check(repo, base, rec["lanes"][task], head=tip)
     if res["verdict"] != "pass":
         return _refuse(repo, rec, task, branch, "outside lane", res["violations"])
+    added = zsplit(git(repo, "diff", "--name-only", "-z", "--no-renames", "--diff-filter=A",
+                       base, tip))
+    hit = [p for p in added if os.path.lexists(os.path.join(root, p))]
+    if hit:
+        return _refuse(repo, rec, task, branch, "would overwrite untracked or ignored file", hit)
     try:
-        git(repo, "merge", "--no-ff", "--no-commit", tip)
+        git(repo, "merge", "--no-ff", "--no-commit", "--no-overwrite-ignore", tip)
     except GitError:
-        git(repo, "merge", "--abort", check=False)
+        _abort(repo)
         return _refuse(repo, rec, task, branch, "conflict")
     rc, tail, _ = execute(rec["test_cmd"], repo, rec.get("timeout_s") or run.TIMEOUT_S)
     if rc != 0:
-        git(repo, "merge", "--abort", check=False)
+        _abort(repo)
         return _refuse(repo, rec, task, branch, "tests failed")
     try:
         git(repo, "commit", "-q", "-m", f"merge lane {task}")
     except GitError as e:
-        git(repo, "merge", "--abort", check=False)
+        _abort(repo)
         return _refuse(repo, rec, task, branch, f"commit failed: {e}")
     rec.setdefault("lane_state", {})[task] = {
         "branch": branch, "base": base, "status": "merged",

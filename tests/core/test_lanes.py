@@ -110,6 +110,44 @@ class LanesTest(unittest.TestCase):
         self.assertEqual(before, snapshot.tree(self.repo))
         self.assertEqual([], scope.changed(self.repo, "HEAD"))
 
+    def test_lane_never_touches_ignored_user_file(self):
+        helpers.write(self.repo, {".gitignore": "src/a/local.txt\n"})
+        helpers.commit_all(self.repo, "ignore")
+        helpers.sh(self.wt, "merge", "-q", "feature")
+        helpers.write(self.wt, {"src/a/local.txt": "worker replacement\n"})
+        helpers.sh(self.wt, "add", "-f", "src/a/local.txt")
+        helpers.commit_all(self.wt, "worker")
+        helpers.write(self.repo, {"src/a/local.txt": "irreplaceable user work\n"})
+        for cmd in ("true", "false"):
+            self.rec["test_cmd"] = cmd
+            run.save(self.repo, self.rec)
+            r = self.finish()
+            self.assertEqual("refused", r["status"])
+            self.assertIn("would overwrite", r["reason"])
+            self.assertEqual("irreplaceable user work\n",
+                             (self.repo / "src/a/local.txt").read_text())
+
+    def test_lane_refuses_staged_or_merging_main(self):
+        self.lane_commit({"src/a/x.js": "a2\n"})
+        helpers.write(self.repo, {"docs/compound-v/spec.md": "draft\n"})
+        helpers.sh(self.repo, "add", "docs/compound-v/spec.md")
+        self.assertEqual("main tree dirty", self.finish()["reason"])
+        self.assertIn("docs/compound-v/spec.md",
+                      helpers.sh(self.repo, "diff", "--cached", "--name-only").decode())
+        helpers.sh(self.repo, "rm", "-q", "--cached", "docs/compound-v/spec.md")
+        (self.repo / "docs/compound-v/spec.md").unlink()
+        (self.repo / ".git/MERGE_HEAD").write_text(self.head + "\n")
+        self.assertEqual("a merge is already in progress", self.finish()["reason"])
+
+    def test_newline_worktree_path(self):
+        helpers.sh(self.repo, "worktree", "add", "-q", "-b", "lane-n",
+                   str(Path(self._tmp.name) / "worker\nspace"), "HEAD")
+        wt = Path(self._tmp.name) / "worker\nspace"
+        helpers.write(wt, {"src/a/x.js": "n\n"})
+        helpers.commit_all(wt, "n")
+        r = lanes.finish(self.repo, run.load(self.repo, self.rec["id"]), "a", "lane-n")
+        self.assertEqual("merged", r["status"], r)
+
     def test_cli_lane_finish(self):
         self.lane_commit({"src/a/x.js": "a2\n"})
         r = helpers.cli(self.repo, "lane", "finish", "--task", "a", "--branch", "lane-a")

@@ -28,7 +28,7 @@ SEVERITIES = ("blocker", "high", "medium", "low")
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def _key() -> bytes:
@@ -165,6 +165,17 @@ def record_review(repo, rec, findings_file, reviewer) -> dict:
         return _store(repo, rec, "review", cur, {
             "result": "error", "reason": "stale review", "cmd": reviewer,
             "review_snapshot": data["snapshot"]})
+    if reviewer == "claude":
+        issued = [c["at"] for c in rec.get("checkouts", []) if c.get("tree") == data["snapshot"]]
+        stops = [s for s in rec.get("reviewer_stops", [])
+                 if not s.get("consumed") and issued and s.get("at", "") > min(issued)]
+    else:
+        stops = [e for e in rec.get("external", {}).get("codex", [])
+                 if e.get("ok") and e.get("tree") == data["snapshot"] and not e.get("consumed")]
+    if not stops:
+        return _store(repo, rec, "review", cur, {
+            "result": "error", "reason": "no reviewer run recorded", "cmd": reviewer})
+    stops[0]["consumed"] = True
     n = rec["review_round"] + 1
     dest = findings_path(repo, rec, n)
     dest.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -177,6 +188,25 @@ def record_review(repo, rec, findings_file, reviewer) -> dict:
         "result": result, "cmd": reviewer, "round": n, "findings": data["findings"],
         "findings_file": f"{run.RUNS}/{dest.name}",
         "tail": data["summary"][:2000], "open": open_})
+
+
+def note_checkout(repo, rec, tree_id: str, dest) -> dict:
+    rec.setdefault("checkouts", []).append({"tree": tree_id, "dest": str(dest), "at": _now()})
+    run.save(repo, rec)
+    return rec
+
+
+def note_reviewer_stop(repo, rec, agent_id, agent_type) -> dict:
+    rec.setdefault("reviewer_stops", []).append(
+        {"agent_id": agent_id, "agent_type": agent_type, "at": _now()})
+    run.save(repo, rec)
+    return rec
+
+
+def _bound(rec, step, r) -> bool:
+    cmd = {"tests": "test_cmd", "live": "live_cmd"}.get(step)
+    return r.get("step") == step and r.get("run") == rec["id"] \
+        and (cmd is None or r.get("cmd") == rec.get(cmd))
 
 
 def waive(repo, rec, step, reason: str) -> dict:
@@ -206,7 +236,7 @@ def status(repo, rec) -> dict:
     for step in req:
         r = rec["receipts"].get(step)
         valid = bool(r) and hmac.compare_digest(str(r.get("mac", "")), _mac(r))
-        current = valid and all(r.get(k) == v for k, v in cur.items())
+        current = valid and _bound(rec, step, r) and all(r.get(k) == v for k, v in cur.items())
         if current and r.get("result") == "pass":
             continue
         if current and r.get("result") == "fail":

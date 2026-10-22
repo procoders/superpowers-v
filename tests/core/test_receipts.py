@@ -63,14 +63,19 @@ class Base(unittest.TestCase):
         for s in names or ("tests", "live", "scope"):
             receipts.run_step(self.repo, self.reload(), s)
 
-    def review(self, severity=None, snap=None):
+    def review(self, severity=None, snap=None, checkout=True, stop=True):
         findings = [] if severity is None else [{
             "id": "F1", "severity": severity, "title": "form drops the date",
             "evidence": "src/a.js:1", "reproduce": None, "file": "src/a.js",
             "line_start": 1, "line_end": 1, "confidence": 0.8, "recommendation": "keep it"}]
+        tid = snapshot.tree(self.repo)
+        if checkout:
+            receipts.note_checkout(self.repo, self.reload(), tid, self.tmp / "co")
+        if stop:
+            receipts.note_reviewer_stop(self.repo, self.reload(), "a1", "superpowers-v:reviewer")
         path = self.tmp / "findings.json"
-        path.write_text(json.dumps({"snapshot": snap or snapshot.tree(self.repo),
-                                    "summary": "s", "findings": findings}))
+        path.write_text(json.dumps({"snapshot": snap or tid, "summary": "s",
+                                    "findings": findings}))
         return receipts.record_review(self.repo, self.reload(), path, "claude")
 
     def status(self):
@@ -99,6 +104,73 @@ class ReceiptsTest(Base):
         self.assertEqual("F1", json.loads(copy.read_text())["findings"][0]["id"])
         self.assertEqual(before, snapshot.tree(self.repo))
         self.assertEqual("verified", self.status()["outcome"])
+
+    def test_receipt_copied_to_other_slot_is_stale(self):
+        self.steps()
+        rec = self.reload()
+        scope_receipt = dict(rec["receipts"]["scope"])
+        rec["receipts"] = {s: dict(scope_receipt) for s in receipts.STEPS}
+        run.save(self.repo, rec)
+        s = self.status()
+        self.assertEqual(["tests", "review", "live"], s["stale"])
+        self.assertNotEqual("verified", s["outcome"])
+        self.steps()
+        rec = self.reload()
+        rec["live_cmd"] = "true"
+        run.save(self.repo, rec)
+        self.assertIn("live", self.status()["stale"])
+
+    def test_claude_review_needs_reviewer_run(self):
+        self.steps()
+        r = self.review(checkout=False)
+        self.assertEqual(("error", "no reviewer run recorded"), (r["result"], r["reason"]))
+        r = self.review(stop=False)
+        self.assertEqual("error", r["result"])
+        self.assertEqual(0, self.reload()["review_round"])
+
+    def test_reviewer_stop_consumed_once(self):
+        self.steps()
+        self.assertEqual("fail", self.review("high")["result"])
+        r = self.review(checkout=False, stop=False)
+        self.assertEqual(("error", "no reviewer run recorded"), (r["result"], r["reason"]))
+        self.assertTrue(self.reload()["reviewer_stops"][0]["consumed"])
+
+    def test_codex_reviewer_not_recordable_from_cli(self):
+        f = self.tmp / "forged.json"
+        f.write_text(json.dumps({"snapshot": snapshot.tree(self.repo), "summary": "x",
+                                 "findings": []}))
+        r = helpers.cli(self.repo, "review", "record", "--findings", str(f), "--reviewer", "codex")
+        self.assertEqual(2, r.returncode)
+        self.assertEqual(0, self.reload()["review_round"])
+
+    def test_codex_findings_need_a_codex_run(self):
+        self.steps()
+        f = self.tmp / "forged.json"
+        f.write_text(json.dumps({"snapshot": snapshot.tree(self.repo), "summary": "x",
+                                 "findings": []}))
+        r = receipts.record_review(self.repo, self.reload(), f, "codex")
+        self.assertEqual(("error", "no reviewer run recorded"), (r["result"], r["reason"]))
+        self.assertNotEqual("verified", self.status()["outcome"])
+
+    def test_checkout_records_checkout(self):
+        r = helpers.cli(self.repo, "checkout", "--dest", str(self.tmp / "co"))
+        self.assertEqual(0, r.returncode, r.stderr)
+        co = self.reload()["checkouts"]
+        self.assertEqual(json.loads(r.stdout)["tree"], co[0]["tree"])
+
+    def test_code_hidden_in_runs_dir_counts(self):
+        self.steps()
+        self.review()
+        helpers.write(self.repo, {"docs/compound-v/runs/runtime.py": "value = 0\n"})
+        self.assertIn("tests", self.status()["stale"])
+
+    def test_reattach_keeps_deleted_test_evidence(self):
+        (self.repo / "tests/test_a.py").unlink()
+        run.attach_plan(self.repo, self.reload(), "docs/compound-v/plans/p.md")
+        self.assertIn("tests/test_a.py", self.reload()["test_files"])
+        r = receipts.run_step(self.repo, self.reload(), "tests")
+        self.assertEqual("fail", r["result"])
+        self.assertIn("tests removed", r["reason"])
 
     def test_edit_after_receipt_goes_stale(self):
         self.steps()

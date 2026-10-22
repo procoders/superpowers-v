@@ -3,17 +3,20 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import os
+import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
-from .gitio import GitError, git, require_commit, zsplit
+from .gitio import GitError, git, require_commit, worktrees, zsplit
 
-EVIDENCE_EXCLUDES = ("docs/compound-v/runs",)
-WORKTREES = ".claude/worktrees"
-UNHASHED = EVIDENCE_EXCLUDES + (WORKTREES,)
+RUNS = "docs/compound-v/runs"
+EVIDENCE_NAMES = re.compile(
+    r"(\d{8}-\d{6}-[a-z0-9-]+(-review-\d+|-plan-review)?\.json|\.tmp-[^/]*\.json|triage\.log)\Z")
 CANON = ("-c", "core.autocrlf=false", "-c", "core.fileMode=true",
-         "-c", f"core.excludesFile={os.devnull}", "-c", "core.safecrlf=false")
+         "-c", f"core.excludesFile={os.devnull}", "-c", "core.safecrlf=false",
+         "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false")
 ENV_GLOBS = (".env*", "*.env", "*.local.*")
 _BIG = 1 << 20
 
@@ -26,20 +29,57 @@ class SnapshotMismatch(SnapshotError):
     pass
 
 
-def _excludes():
-    return [f":(exclude){p}" for p in UNHASHED]
+def worktree_roots(repo) -> list:
+    root = os.path.realpath(str(repo))
+    paths = (os.path.realpath(w["path"]) for w in worktrees(repo))
+    return sorted(os.path.relpath(p, root) for p in paths if p.startswith(root + os.sep))
+
+
+def unhashed(repo) -> list:
+    d = Path(repo) / RUNS
+    names = sorted(os.listdir(d)) if d.is_dir() else []
+    ours = [f"{RUNS}/{n}" for n in names if EVIDENCE_NAMES.match(n) and (d / n).is_file()]
+    return ours + worktree_roots(repo)
+
+
+def excludes(paths) -> list:
+    return [f":(exclude,literal){p}" for p in paths]
+
+
+def _seed(repo, env) -> None:
+    src = Path(repo) / os.fsdecode(git(repo, "rev-parse", "--git-path", "index").strip())
+    if src.is_file():
+        shutil.copyfile(str(src), env["GIT_INDEX_FILE"])
+    else:
+        git(repo, *CANON, "read-tree", "HEAD", env=env)
+    flagged = [e[2:] for e in zsplit(git(repo, "ls-files", "-v", "-z", env=env)) if e[:1].islower()]
+    if flagged:
+        git(repo, "update-index", "--no-assume-unchanged", "-z", "--stdin", env=env,
+            input=b"\0".join(os.fsencode(p) for p in flagged))
 
 
 def tree(repo) -> str:
     require_commit(repo)
+    skip = unhashed(repo)
     with tempfile.TemporaryDirectory(prefix="cv-idx-") as tmp:
         env = {"GIT_INDEX_FILE": os.path.join(tmp, "index")}
-        # Seeding from HEAD keeps tracked-but-ignored files in the snapshot.
-        git(repo, *CANON, "read-tree", "HEAD", env=env)
-        git(repo, *CANON, "rm", "-r", "--cached", "-q", "--ignore-unmatch", "--",
-            *UNHASHED, env=env)
-        git(repo, *CANON, "add", "-A", "--", ".", *_excludes(), env=env)
+        # A copy of the user's index keeps force-added ignored files; theirs is never written.
+        _seed(repo, env)
+        if skip:
+            git(repo, *CANON, "rm", "-r", "--cached", "-q", "--ignore-unmatch", "--",
+                *[f":(literal){p}" for p in skip], env=env)
+        git(repo, *CANON, "add", "-A", "--", ".", *excludes(skip), env=env)
         return git(repo, *CANON, "write-tree", env=env).decode().strip()
+
+
+def verify_tracked(repo, tree_id: str, dest) -> list:
+    gd = os.fsdecode(git(repo, "rev-parse", "--absolute-git-dir").strip())
+    wt = ("--git-dir", gd, "--work-tree", str(dest))
+    with tempfile.TemporaryDirectory(prefix="cv-verify-") as tmp:
+        env = {"GIT_INDEX_FILE": os.path.join(tmp, "index")}
+        git(repo, *wt, *CANON, "read-tree", tree_id, env=env)
+        git(repo, *wt, *CANON, "update-index", "-q", "--refresh", env=env, check=False)
+        return zsplit(git(repo, *wt, *CANON, "diff-files", "--name-only", "-z", env=env))
 
 
 def _hash_dir(dest: Path) -> str:
@@ -82,7 +122,9 @@ def materialize(repo, tree_id: str, dest: Path, _after_extract=None) -> str:
     dest.mkdir(parents=True, exist_ok=True)
     if any(dest.iterdir()):
         raise SnapshotError(f"checkout destination is not empty: {dest}")
-    data = git(repo, "archive", "--format=tar", tree_id)
+    if any(e.startswith(b"160000 ") for e in git(repo, "ls-tree", "-r", "-z", tree_id).split(b"\0")):
+        raise SnapshotError("submodules are not supported by the review checkout")
+    data = git(repo, *CANON, "archive", "--format=tar", tree_id)
     p = subprocess.run(["tar", "-x", "-f", "-", "-C", str(dest)], input=data,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if p.returncode != 0:

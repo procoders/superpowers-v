@@ -4,7 +4,7 @@ import os
 import re
 
 from .gitio import git
-from .scope import EXCLUDES, changed, matches, untracked
+from .scope import changed, skipped, matches, untracked
 from .snapshot import CANON
 
 _F = re.I | re.M
@@ -33,7 +33,7 @@ _BIG = 1 << 20
 
 def _diff(repo, base, *opts) -> bytes:
     return git(repo, *CANON, "diff", *opts, "--no-color", "--no-ext-diff", "--no-textconv",
-               "--no-renames", base, "--", ".", *EXCLUDES)
+               "--no-renames", base, "--", ".", *skipped(repo))
 
 
 def _added(repo, base) -> str:
@@ -43,7 +43,7 @@ def _added(repo, base) -> str:
             in_hunk = False
         elif line.startswith(b"@@"):
             in_hunk = True
-        elif in_hunk and line.startswith(b"+"):
+        elif in_hunk and line[:1] in (b"+", b"-"):
             lines.append(line[1:].decode("utf-8", "replace"))
     return "\n".join(lines)
 

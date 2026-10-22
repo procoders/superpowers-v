@@ -50,6 +50,18 @@
           }
         ]
       }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/subagent.sh\" || true",
+            "shell": "bash",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   },
   "modules": [

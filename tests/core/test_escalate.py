@@ -32,6 +32,15 @@ class EscalateTest(unittest.TestCase):
         self.assertEqual("full", r["tier"])
         self.assertIn("auth", r["reasons"])
 
+    def test_removing_auth_escalates(self):
+        helpers.write(self.repo, {"main.py": "def handle():\n    require_login()\n    return 42\n"})
+        helpers.commit_all(self.repo)
+        self.base = helpers.sh(self.repo, "rev-parse", "HEAD").decode().strip()
+        helpers.write(self.repo, {"main.py": "def handle():\n    return 42\n"})
+        r = self.classify()
+        self.assertEqual("full", r["tier"])
+        self.assertIn("auth", r["reasons"])
+
     def test_escalate_copy_change_light(self):
         helpers.write(self.repo, {"README.md": "Welcome to the salon site\n",
                                   "docs/compound-v/specs/s.md": "more login words\n"})

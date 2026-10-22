@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .gitio import git, require_commit, resolve, zsplit
 from .scope import matches
-from .snapshot import CANON, UNHASHED
+from .snapshot import CANON, excludes, unhashed
 
 RUNS = "docs/compound-v/runs"
 STAGES = ("brainstorm", "preflight", "plan", "build", "verify", "done")
@@ -47,7 +47,7 @@ def _slug(text: str) -> str:
 
 def hash_test_files(repo, globs) -> dict:
     out = git(repo, *CANON, "ls-files", "-z", "--cached", "--others", "--exclude-standard",
-              "--", ".", *[f":(exclude){p}" for p in UNHASHED])
+              "--", ".", *excludes(unhashed(repo)))
     found = {}
     for p in sorted(set(zsplit(out))):
         full = Path(repo) / p
@@ -218,7 +218,7 @@ def attach_plan(repo, rec: dict, plan_path) -> dict:
         "budget_split": data.get("budget_split") or dict(BUDGET_SPLIT),
         "test_globs": globs, "timeout_s": data.get("timeout_s", TIMEOUT_S),
         "acceptance_rev": hashlib.sha256(section.encode("utf-8")).hexdigest(),
-        "test_files": hash_test_files(repo, globs),
+        "test_files": {**hash_test_files(repo, globs), **(rec.get("test_files") or {})},
     })
     save(repo, rec)
     return rec

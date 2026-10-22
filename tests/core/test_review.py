@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import helpers  # noqa: E402
 from test_receipts import Base  # noqa: E402
 
-from cvcore import review, snapshot  # noqa: E402
+from cvcore import review, run, snapshot  # noqa: E402
 
 FAKE = r'''#!/usr/bin/env python3
 import json, os, sys
@@ -55,6 +55,34 @@ class ReviewTest(Base):
         self.assertNotIn("live.rc", json.loads(data["summary"]))
         self.assertTrue(data["prompt_has_request"])
         self.assertEqual(snapshot.tree(self.repo), data["snapshot"])
+
+    def test_setup_replacing_source_is_error(self):
+        helpers.write(self.repo, {"src/a.js": "throw new Error('broken')\n"})
+        rec = self.reload()
+        rec["setup_cmd"] = "printf 'ok\\n' > src/a.js; mkdir -p node_modules; touch node_modules/x"
+        run.save(self.repo, rec)
+        with self.assertRaises(review.ReviewError) as cm:
+            review.codex(self.repo, self.reload(), self.out, timeout_s=60)
+        self.assertIn("setup or reviewer changed source", str(cm.exception))
+        rec["setup_cmd"] = "mkdir -p node_modules; touch node_modules/x"
+        run.save(self.repo, rec)
+        review.codex(self.repo, self.reload(), self.out, timeout_s=60)
+
+    def test_reviewer_editing_source_is_error(self):
+        bindir = self.tmp / "bin"
+        (bindir / "codex").write_text(FAKE.replace("prompt = sys.stdin.read()",
+                                                   "prompt = sys.stdin.read()\n"
+                                                   "open(os.path.join(cwd, 'src/a.js'), 'w').write('x')"))
+        with self.assertRaises(review.ReviewError):
+            review.codex(self.repo, self.reload(), self.out, timeout_s=60)
+
+    def test_submodule_review_clear_error(self):
+        sub = helpers.make_repo(self.tmp / "sub", {"lib.py": "pass\n"})
+        helpers.sh(self.repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+                   str(sub), "vendor")
+        with self.assertRaises(review.ReviewError) as cm:
+            review.codex(self.repo, self.reload(), self.out, timeout_s=60)
+        self.assertIn("submodules are not supported", str(cm.exception))
 
     def test_codex_unparsable_output_is_error(self):
         bindir = self.tmp / "bin"
