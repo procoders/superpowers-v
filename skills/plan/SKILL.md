@@ -29,16 +29,16 @@ Sections, in this order:
 
 | # | Behaviour (observable) | Check | Source |
 |---|---|---|---|
-| A1 | A customer books a free slot and sees the confirmation with the salon's phone | live: `booking.spec.ts › books a slot` | spec §Booking |
-| A2 | A second booking of the same slot is refused, and exactly one booking is stored | test: `test_slot_race_one_wins` | F9 |
-| A3 | The app refuses to start in production with the placeholder admin password | test: `test_refuses_placeholder_secret` | F1, O2 |
+| A1 | A visitor submits the main form and sees the confirmation with the business's contact details | live: `main-form.spec.ts › submits and confirms` | spec §Booking |
+| A2 | Two submissions for the last free unit: one succeeds, the other is refused, exactly one record is stored | test: `test_last_unit_race_one_wins` | D3 |
+| A3 | The app refuses to start in production with the placeholder admin password | test: `test_refuses_placeholder_secret` | S1 |
 
 - One row per behaviour, written so that a stranger could check it. Include the **negative** rows: refusals, expiries, limits, erasure.
 - Every spec requirement, every DR row, and every checklist item that applies ends up as a row.
 - Each check names a test (or a live step) by the name the build will give it.
 - The CLI hashes the text from `## Acceptance` to the next `## ` heading. Editing it after receipts exist makes them stale. That is intended, so finish the table here.
 
-**`## Checklists`.** A spec call never makes an applicable checklist item n.a.: when a call conflicts with an item (a seed file where D2 needs an operator edit), the item wins and the plan says so. Answer every item of `checklists.md` (R, J, D, P, F, O, T): `F3 applies → A7` or `P4 n.a. — CLI tool, no pages`. No item is skipped.
+**`## Checklists`.** A spec call never makes an applicable checklist item n.a.: when a call conflicts with an item (a seed file where D1 needs an operator edit), the item wins and the plan says so. Answer every item of `checklists.md` (R, J, D, P, F, O, T): `F3 applies → A7` or `P4 n.a. — CLI tool, no pages`. No item is skipped.
 
 **`## Tasks`.** Size each task as the smallest unit that carries its own test cycle and that a reviewer could reject while approving its neighbour. Fold setup, configuration and docs into the task whose deliverable needs them. Each task lists:
 - files to create or modify (exact paths);
@@ -48,7 +48,7 @@ Sections, in this order:
 
 For a **web project**, one task writes the real-browser test: Playwright Test (`@playwright/test`, with `webServer` starting the app) submits each main form in a real browser and checks the resulting state (reload, admin view, stored data). Its command is `live_cmd`. curl is not enough: browser-only failures (Origin, cookies, redirects) are exactly what it catches. For a non-web project, `live_cmd` runs the binary or the API through its main flow.
 
-Always include the operator guide (checklist O7) as part of a task.
+Always include a short operator guide (setup, configuration, routine changes, data requests) as part of a task.
 
 **`## Task → model`.** One row per task: `opus` by default; `sonnet` only for mechanical work with nothing to decide (renames, boilerplate config, copying text the plan already fixes). Give the reason in one line.
 

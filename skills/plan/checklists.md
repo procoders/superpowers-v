@@ -1,61 +1,81 @@
 # Checklists
 
-The plan answers **every item** (R, J, D, P, F, O, T) for this product: `applies → A<n>`, naming the acceptance row that checks it, or `n.a. — <why>`. An item that applies and has no row is a gap. The reviewer receives this file and the plan's answers, and judges against both.
+The plan answers **every item** below for this product: `applies → A<n>`, naming the acceptance row that checks it, or
+`n.a. — <why>`. An item that applies and has no row is a gap. The reviewer receives this file with the plan's answers.
 
-These are the checklists that won the salon benchmark: plain Claude Code plus these four lists and one review/fix pass beat the full v3 pipeline on every blind judgement (`docs/v4/salon-report.md`). Adapted from `docs/v4/light-flow.md`.
+Universal for web applications, capped at 25 so that each one gets a real answer. Every item names its source:
+`A` = OWASP ASVS 5.0, `WSTG` = OWASP Web Security Testing Guide, `CS` = OWASP Cheat Sheet, `SC` = WCAG 2.2 success
+criterion. Evidence and the full mapping: `docs/compound-v/preflight/2026-10-22-v4-webapp-qa-practice.md`.
 
-## R. The request itself (first, before any other list)
-- R1 Every rule the request or spec states is its own acceptance row, in the request's words. A clause like "follows the same rules as X" expands into **one row per rule of X** (each limit, window, cap and check X enforces), never one row for the whole clause.
-- R2 Every number in the request or spec (a time limit, a count, a window, a size) gets **boundary rows**: just inside, exactly at, just outside, with the comparison (`<` or `≤`) written in the row and computed at full precision (no truncated seconds). Read the phrase, then write the comparison: "up to N before X" allows the action while at least N remains, so exactly N is **allowed**; "at least N" is ≥ N; "within N" is ≤ N; "more than N" / "less than N" are strict. The exact-N row states allowed or refused accordingly.
-- R3 For a change to existing code: every existing rule the new path must also obey is listed and has a row; the existing tests still pass unchanged.
-- R4 No new restriction on the user beyond the request and the spec. A protective limit you add (a cap on moves, a lockout) is listed as your call, must never refuse something the stated rules allow, and prefers throttling abuse over capping legitimate use.
+## R. The request
+- **R1** Every stated rule is its own acceptance row, in the request's words. "Same rules as X" becomes one row per check
+  X enforces. *A 2.1.3, 2.3.2; WSTG-BUSL-01*
+- **R2** Every number and time rule has rows at just inside, exact and just outside, with the comparison written (`<` or
+  `≤`), in the rule's own unit at full precision and in the time zone that governs it. Read the phrase: "up to N before"
+  allows the action while at least N remains (exactly N is allowed); "at least N" is ≥; "within N" is ≤; "more/less than"
+  are strict. *Hendrickson Boundaries; A 2.2.1*
+- **R3** A change to existing code: every rule the old path enforces is listed and has a row on the new path, and the
+  existing tests pass unchanged. *WSTG-BUSL-06*
+- **R4** No restriction beyond the request. A protective limit is marked as the builder's call, throttles abuse, and never
+  refuses use the stated rules allow. *A 6.1.1*
+- **R5** The jurisdiction's duties for this audience (privacy notice, consumer notices, accessibility) are each a row, or
+  out of scope with the owner's agreement. Each research row (`DR#`) is a row. *GDPR 13; 2011/83/EU Art. 6; 2019/882*
 
-## J. Jurisdiction and domain (from the builder's domain research)
-- J1 Every DR row of the plan's research table is an acceptance row, or is marked out of scope with the spec's agreement.
-- J2 Privacy notice contents, access and erasure rights, and retention, as the jurisdiction requires.
-- J3 Price and tax display, consumer-protection notices (complaints, dispute resolution) where they apply.
-- J4 Accessibility expectations for the jurisdiction and audience.
-- J5 Stack and deployment traps: deleted data left on disk, in backups or in logs; timezone and DST; reverse proxy and HTTPS headers.
-- J6 Each owner fact the research left open: the assumption the plan makes, written down.
+## D. Data and state
+- **D1** Each entity can be created, changed, retired and deleted. Past records keep the values they had at the time.
+  Business data the operator changes in normal operation (catalogue, prices, schedules, contact details, settings) is
+  editable by an authorised operator without a code change or restart. *Hendrickson CRUD, Follow the Data*
+- **D2** A state table per entity, with the forbidden transitions and the step order. Revisiting an old link shows the
+  current state. *A 2.3.1; WSTG-BUSL-06*
+- **D3** A limited resource, or the same form submitted twice (double click, back and resubmit, an "any" / auto-assign
+  choice), yields exactly one result, also under concurrency; an operation commits whole or not at all. Use a one-time
+  token per rendered form. *A 2.3.3, 2.3.4, 15.4.2; Idempotency-Key draft*
+- **D4** Identifiers (email, phone, username, codes) are canonicalised once: a valid value is stored unchanged in meaning,
+  and two spellings of one identity collide. *A 1.1.1*
+- **D5** Times: instants in UTC; a future local event as wall time plus an IANA zone id; rows for DST gaps and overlaps
+  wherever a rule crosses one. *W3C time-zone note; RFC 9557*
 
-## D. Data lifecycle: the operator, not a developer
-- D1 For every entity: how it is created, changed, **retired without losing history**, and deleted. Past records keep the values they had (a price change must not rewrite past confirmations).
-- D2 What the operator configures without a code change: locale (timezone, currency, language), contact details, business data (hours, staff, services).
-- D3 A person's request to see or erase their data: the operator can act on it, and erasure reaches every copy (related rows, notes, files, backups, logs) or the spec says what is kept and why.
-- D4 Backup and restore: what it is, how it is run, and a tested restore.
-- D5 Persisted state survives a restart. Tests check the stored state, not only status codes.
+## V. Personal data
+- **V1** An inventory: each personal field, its purpose and its retention. *GDPR 5(1)(c),(e), 30; A 14.1.1, 14.2.7*
+- **V2** Access and erasure reach every copy: related rows, files, logs, exports and backups. A backup is restored in a
+  test, and the restore re-applies erasures. *GDPR 15, 17, 32(1)(c),(d)*
+- **V3** No personal data in URLs, logs or third-party calls; pages with personal data send `Cache-Control: no-store`;
+  data files and backups are not world-readable. *A 14.2.1, 14.2.3, 14.3.2, 16.2.5; CWE-732*
 
-## P. Every page and state
-- P1 Each page's empty state.
-- P2 An error state for each user mistake, with a message saying what to do.
-- P3 "No longer valid" states: cancelled, expired, already used, moved. Revisiting an old link later shows the right one.
-- P4 Keyboard use and screen-reader labels on every control; small screens.
-- P6 Names and free text accept every script, including joiners (ZWJ, ZWNJ) and combining marks; validation rejects only control characters and length.
-- P5 The business's contact details wherever a customer needs them (confirmations, errors, the privacy page).
+## S. Security
+- **S1** Fails closed: no default, example or placeholder secret, account or contact detail works in production, which
+  refuses to start without real ones. Debug off. *A 13.2.3, 6.3.2, 15.2.3, 13.4.2, 16.5.3*
+- **S2** Authorization is checked server-side on every object, field and function: deny by default; one user can never read
+  or change another's records by id; only allow-listed fields are writable. *A 8.2.1–8.2.3, 15.3.3; API1, API3, API5*
+- **S3** Sessions: a new id at login; server-side invalidation on logout, credential change and account disable; idle and
+  absolute timeouts; `Secure`, `HttpOnly`, `SameSite` cookies. *A 7.2.4, 7.3.1, 7.3.2, 7.4.1–7.4.3, 3.3.1–3.3.4*
+- **S4** Safe methods (GET, HEAD, OPTIONS) never change state. An unsupported method gets 405 (or 501), never a 500.
+  *RFC 9110 §9.2.1, §9.1; A 3.5.3, 4.1.4*
+- **S5** Every state-changing request, public and login forms included, carries an anti-forgery token, or passes a
+  `Sec-Fetch-Site` check with an `Origin` fallback; `Origin: null` is never trusted. Proved in a real browser under the
+  deployed `Referrer-Policy`. *A 3.5.1; CSRF CS*
+- **S6** Abuse limits on login, every public create and every code or token lookup, keyed by source network (an IPv6 /64,
+  not one address) and by target; the client IP is read only from a trusted proxy. *A 2.4.1, 6.3.1, 4.1.3, 15.3.4; API6*
+- **S7** Input validated server-side for type, length and range, with size limits answered 413/414/431; malformed input
+  gets a 4xx with a generic message, never a 500; free text accepts every script (joiners and combining marks included)
+  and rejects only control characters. *A 2.2.1, 2.2.2, 16.5.1, 16.5.4; Input Validation CS*
+- **S8** Output encoded for its context; queries parameterised. *A 1.2.1, 1.2.4, 3.2.2*
 
-## F. Every form and endpoint
-- F1 Authentication **fails closed** when unconfigured: no default or placeholder secret works, in any environment.
-- F2 Sessions expire, and are revoked on logout and on credential change, server-side.
-- F3 CSRF protection on every state-changing form, and **tested in a real browser**. An Origin check that rejects `null` breaks every form under `Referrer-Policy: no-referrer`, and only a real browser shows it. That includes **public, unauthenticated forms** (booking, sign-up, contact), not only the staff area.
-- F4 Output escaping everywhere user input is shown.
-- F5 Input and body-size limits, with the correct status codes.
-- F6 Rate limits on login, on public submissions, and on lookups of codes or tokens. Key them per IPv6 /64 (not per single address) and per target (the phone, the code, the account), not only per source.
-- F7 No personal data in pages, URLs or responses that a third party could see, cache or index.
-- F8 Malformed input never yields a 500, and neither does any HTTP method on any route (`HEAD`, `OPTIONS`, an unknown verb): 405 or the GET answer, never a crash.
-- F9 Concurrency: two requests for the same last slot, or a double submit, leave exactly one result. The same person submitting the same form twice (double click, back and resubmit) creates **one** result, also when an "any" / auto-assign option would pick a different resource the second time: use a one-time token per rendered form.
+## U. Pages
+- **U1** Every page has an empty state, an error state and a "no longer valid" state (expired, used, cancelled); back,
+  refresh and bookmarks land on the right one. *Hendrickson Count, Navigation*
+- **U2** Form errors: validated on submit, an error summary that takes focus, an inline message saying how to fix it,
+  input kept, `Error:` in the title. *GOV.UK validation; SC 3.3.1, 3.3.3, 4.1.3*
+- **U3** Keyboard, labels, name/role/value, visible focus, 24 px targets, reflow at 320 px, no re-entry, login without a
+  cognitive test. *SC 2.1.1, 1.3.1, 4.1.2, 2.4.7, 2.5.8, 1.4.10, 3.3.7, 3.3.8*
+- **U4** Every claim the interface, notices or privacy text makes (query-string notices included) is true of the stored
+  state. *HICCUPS Claims; GDPR 12*
 
-## O. Operations
-- O1 First run: setup steps, and a clear error when something is missing.
-- O2 Configuration is validated at startup; production refuses to start with missing or placeholder values.
-- O3 Logs carry no personal data.
-- O3b Files holding personal data (the database, its WAL, backups, exports) are created with mode 0600.
-- O4 A health check.
-- O5 Deployment behind HTTPS and a proxy (trusted proxy headers, secure cookies).
-- O6 Upgrade path: migrations, and keeping data across versions.
-- O7 An operator guide: setup, configuration, routine changes, retirement, backup/restore, data requests.
+How a row is proven is the pipeline's job, not another item: each row's test asserts stored state, and a real-browser
+test of the main forms is the plan's `live_cmd`.
 
-## T. Tests that prove the rows
-- T1 Negative paths for every form and endpoint (wrong, missing, oversized, replayed, expired input).
-- T2 State transitions, including the forbidden ones (a cancelled booking cannot be confirmed).
-- T3 Restart, missing config and concurrency, wherever a row depends on them.
-- T4 Web projects: a real-browser test (Playwright Test) submits each main form against the running app and checks the resulting state. This test is the plan's `live_cmd`.
+## Thorough only (load when the depth is `thorough`)
+Open redirect (A 3.7.2) · account and code enumeration (A 6.3.8) · security header baseline (A 3.4.1–3.4.6) · unbounded
+lists and expensive endpoints (API4) · CSV/formula injection (A 1.2.10) · dependency audit (A 15.2.1) · file upload
+(A 5.2–5.4) · user password rules (A 6.2.x) · logout visible on every page (A 7.4.4) · operator guide, health check,
+migrations (practice) · an SFDIPOT pass and Hendrickson Interrupt / Starve / Multi-User / Sequences on the main flow.
