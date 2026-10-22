@@ -6,7 +6,7 @@ argument-hint: "[--refresh]"
 
 # Onboard
 
-Study an existing repository and write down what is true about it, with a citation for every claim, so that later pre-flights and the `v-memory` agent read evidence instead of rediscovering it. Nothing is written without the user's approval.
+Study an existing repository and write down what is true about it, with a citation for every claim, so that the builder and the `v-memory` agent read evidence instead of rediscovering it. Nothing is written without the user's approval.
 
 **Read `reference.md` in this directory before step 1.** It holds the full pipeline, the two-tier citation gate, detect-and-bridge, the path-scoped rules grammar and the refresh rules. This file chooses the branch and keeps the non-negotiables in view. The deterministic gates are subcommands of:
 

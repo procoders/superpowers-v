@@ -9,13 +9,13 @@ These are the checklists that won the salon benchmark: plain Claude Code plus th
 - R2 Every number in the request or spec (a time limit, a count, a window, a size) gets **boundary rows**: just inside, exactly at, just outside, with the comparison (`<` or `≤`) written in the row and computed at full precision (no truncated seconds).
 - R3 For a change to existing code: every existing rule the new path must also obey is listed and has a row; the existing tests still pass unchanged.
 
-## J. Jurisdiction and domain (from the domain pre-flight)
-- J1 Every row of the domain pre-flight's requirement table is an acceptance row, or is marked out of scope with the spec's agreement.
+## J. Jurisdiction and domain (from the builder's domain research)
+- J1 Every DR row of the plan's research table is an acceptance row, or is marked out of scope with the spec's agreement.
 - J2 Privacy notice contents, access and erasure rights, and retention, as the jurisdiction requires.
 - J3 Price and tax display, consumer-protection notices (complaints, dispute resolution) where they apply.
 - J4 Accessibility expectations for the jurisdiction and audience.
 - J5 Stack and deployment traps: deleted data left on disk, in backups or in logs; timezone and DST; reverse proxy and HTTPS headers.
-- J6 Each owner fact the pre-flight left open: the assumption the plan makes, written down.
+- J6 Each owner fact the research left open: the assumption the plan makes, written down.
 
 ## D. Data lifecycle: the operator, not a developer
 - D1 For every entity: how it is created, changed, **retired without losing history**, and deleted. Past records keep the values they had (a price change must not rewrite past confirmations).

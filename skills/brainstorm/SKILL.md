@@ -1,6 +1,6 @@
 ---
 name: brainstorm
-description: Use before building or changing anything non-trivial in a project set up for Compound V (a feature, page, flow, integration or app). Asks one question at a time about the product, data lifecycle, jurisdiction, forms, operations and edge cases. Writes the spec, starts the run record, checks the spec with a fresh builder, gets approval, then launches the pre-flights. Typos, copy and config values skip this and go straight to compound-v:verify.
+description: Use before building or changing anything non-trivial in a project set up for Compound V (a feature, page, flow, integration or app). Asks one question at a time about the product, data lifecycle, jurisdiction, forms, operations and edge cases. Writes the spec, starts the run record, checks the spec with a fresh builder, gets approval, then hands off to compound-v:build. Typos, copy and config values skip this and go straight to compound-v:verify.
 ---
 
 # Brainstorm
@@ -29,7 +29,7 @@ Your first message has exactly two things:
 
 **Only an explicit request to skip the questions ends them** ("skip the questions", "just build it"). "Your call", "you decide" or "keep it simple" settles **that one question**: propose something concrete, mark it as your call, and ask the next most important question. The depth question (§4) is still asked for anything bigger than a small change.
 
-When they skip: state the significant how-it-gets-made choices in one line, write the spec with every decision marked as your call, and continue from §5. Skipping removes the questions. It never removes the pre-flights, the plan or verification.
+When they skip: state the significant how-it-gets-made choices in one line, write the spec with every decision marked as your call, and continue from §5. Skipping removes the questions. It never removes the builder's research, the plan or verification.
 
 ## 3. The conversation: one question per message
 
@@ -49,8 +49,8 @@ product and users · data lifecycle (create / change / retire with history / del
 | Depth | Questions | Adds |
 |---|---|---|
 | quick | only the areas that change what gets built | nothing beyond the tier minimum |
-| standard (default) | every territory area | pre-flights by their conditions (§7) |
-| thorough | every area, plus an edge-case walk per entity | all pre-flights that can run, an offered Codex plan review, the native `/security-review` suggested at the end |
+| standard (default) | every territory area | nothing beyond the builder's own research |
+| thorough | every area, plus an edge-case walk per entity | an offered Codex plan review, the native `/security-review` suggested at the end |
 
 When `.claude/compound-v.json` says `"stance": "cost-aware"`, suggest quick. Depth adds questions and checks. It never removes the full tier's minimum: tests, executable review, real-world check and scope check.
 
@@ -94,29 +94,9 @@ Then ask for approval: give the spec path and the short list of your calls, and 
 No code, scaffolding, dependency installs or project creation until the user approves the spec. Reading and exploring are fine. An answer that changes the spec means updating the spec and asking again.
 </HARD-GATE>
 
-## 7. Pre-flights: one message, in parallel
+## 7. Hand off to the build
 
-After approval: `compound-v.py run stage --id <id> --to preflight`. Then decide which pre-flights run, and dispatch all of them **in one message** (parallel Agent calls). Give each one the spec path, its output path, and the V-memory hits if there were any:
-
-| Agent | Runs when | Writes |
-|---|---|---|
-| `compound-v:domain-expert` | always (≤ 4 searches) | `docs/compound-v/preflight/<date>-<topic>-domain.md` |
-| `compound-v:code-archaeologist` | git tracks source code (check below) | `…-archaeology.md` |
-| `compound-v:doc-validator` | the spec names or implies a dependency, or `thorough` | `…-libraries.md` |
-
-Source check (any output line means code exists):
-
-```bash
-git ls-files | grep -vE '^(docs/|\.claude/)|\.(md|txt|png|jpe?g|gif|svg|webp|ico|pdf)$|^(LICENSE|\.gitignore|\.gitattributes)$' | head -3
-```
-
-No other fan-out: these three, plus the v-memory lookup and the builder check, are all the subagents this stage starts.
-
-When the pre-flights are back, read their files. If an **open** owner question would change what gets built, ask it now (numbered, in one message). Otherwise the plan records it as an assumption.
-
-## 8. Next
-
-Invoke `compound-v:plan` and no other skill.
+After approval: `compound-v.py run stage --id <id> --to plan`, then invoke `compound-v:build` and no other skill. Dispatch no pre-flight agents: the one `compound-v:builder` does the domain research, the code reading and the library check itself, in its own context, before it writes the plan. In our benchmark, separate pre-flight agents plus a plan written here and a separate builder cost more than the light flow and did not beat it (see V4-RESULTS in the benchmark kit; spec §4.2–4.4).
 
 ## Red flags
 
@@ -126,6 +106,6 @@ Invoke `compound-v:plan` and no other skill.
 | "Two quick questions in one message is fine" | One question per message. The builder-check round is the only exception. |
 | "They said 'sounds good'" | Approval covers what you showed them. A spec they have not seen is not approved. |
 | "Edge cases will come up in review" | They are cheapest now. Ask about them on purpose. |
-| "Domain research can wait for the plan" | The domain pre-flight is where the production depth comes from. It always runs. |
+| "Domain research can be skipped for this one" | The builder's domain research is where the production depth comes from. It always runs. |
 
 Adapted in part from Superpowers `brainstorming` (MIT, Jesse Vincent).

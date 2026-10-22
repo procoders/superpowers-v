@@ -7,7 +7,7 @@
 `/compound-v:onboard` studies an existing repository and builds a **trusted, citation-verified
 knowledge base** (`docs/compound-v/architecture/*`) plus **cross-tool agent instructions**
 (`AGENTS.md` + a thin `CLAUDE.md` bridge, root `CONVENTIONS.md`, conditional `DESIGN.md`), all behind
-a human approval gate. What it writes is read later by the `v-memory` agent and the code pre-flight
+a human approval gate. What it writes is read later by the `v-memory` agent and the builder's code reading
 as evidence. It never rewrites the cycle's skills or the CLI.
 
 ---

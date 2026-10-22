@@ -44,7 +44,7 @@ Each one prints one line (`step: result (exit, duration)`), plus the reason and 
 
 ## 2. Executable review (full runs)
 
-Required for full runs, at most two rounds. Read `reviewer` from `run show --id <id>` (`codex` or `claude`; empty means `claude`).
+Required for full runs: round 1, then round 2 only to re-check round-1 fixes; at most two. The reviewer runs a fixed list of high-yield probes within a turn budget (`review-prompt.md`). Read `reviewer` from `run show --id <id>` (`codex` or `claude`; empty means `claude`).
 
 **Codex:** `compound-v.py review codex --id <id>`. The CLI materializes the tree, runs Codex there, and records the result.
 
@@ -62,7 +62,7 @@ Fill `${CLAUDE_PLUGIN_ROOT}/skills/verify/review-prompt.md`:
 - `{checklists}`: `${CLAUDE_PLUGIN_ROOT}/skills/plan/checklists.md` together with the plan's `## Checklists` answers;
 - `{snapshot}`: the `tree` that `checkout` printed;
 - `{setup_cmd}`: the plan's `setup_cmd`, or `none`;
-- `{previous}`: for round 2, the round-1 findings from `docs/compound-v/runs/<id>-review-1.json`; for round 1, `none`.
+- `{previous}`: for round 2, `<previous_round>` + the round-1 findings from `docs/compound-v/runs/<id>-review-1.json` + `</previous_round>`; for round 1, `none`.
 
 Dispatch the `compound-v:reviewer` agent with the filled prompt, `CHECKOUT=<dir>/tree`, `FINDINGS=<dir>/findings.json`, and the round. The findings file must stay outside the repo: inside it, the file would change the tree and stale the review. `review record` copies it into `docs/compound-v/runs/` itself. Then:
 
@@ -74,10 +74,12 @@ The CLI checks that the findings belong to the current tree, stores them under `
 
 ## 3. The fix round: exactly one
 
-When review 1 has blocker or high findings:
-1. `run stage --id <id> --to build`. Fix every blocker and high finding, and the cheap mediums. Each fix comes with a test that would have caught it.
-2. `run stage --id <id> --to verify`. Run all of §1 again, then review round 2 (§2).
+When review 1 has blocker, high or real medium findings:
+1. `run stage --id <id> --to build`. Send the findings to the **same** `compound-v:builder` that built the run (`SendMessage` to its agent id, from `compound-v:build`), never to a new agent, and do not fix them yourself. It fixes every blocker and high and each real medium, each with a regression test, and reports.
+2. `run stage --id <id> --to verify`. Run all of §1 again, then review round 2 (§2), which re-checks only those fixes.
 3. When round 2 still has blocker or high findings, the run ends **incomplete**, with those findings recorded. There is no third review, and nothing is called fixed without a review.
+
+When review 1 has only low findings, there is no round 2: record them in the report.
 
 After the last review, edit nothing. An edit stales every receipt, and no review round is left to renew them.
 

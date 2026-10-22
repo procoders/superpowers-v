@@ -6,7 +6,7 @@ argument-hint: "[--check]"
 
 # Init
 
-Set up this project for the Compound V cycle (brainstorm → pre-flights → plan → build → verify). Probe everything first, then show the user **one** message with the findings and every proposed change, numbered, and apply only what they approve. With `--check`, probe and report, and write nothing.
+Set up this project for the Compound V cycle (brainstorm → build, where one builder researches, plans and codes → verify). Probe everything first, then show the user **one** message with the findings and every proposed change, numbered, and apply only what they approve. With `--check`, probe and report, and write nothing.
 
 **Commands.** Run each command as one plain command line with literal values (the run id, real paths): no shell variables you set yourself, no `;` or `&&` chains, no `$?`, and no pipes or redirects (`|`, `>`, `2>&1`): the one exception is the `<<'REQUEST'` heredoc that hands `run start` its request. The sandbox's auto-allow refuses compound commands, and `sandbox.excludedCommands` only matches a bare call.
 

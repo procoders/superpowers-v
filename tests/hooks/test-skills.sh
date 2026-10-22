@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/hooks/test-skills.sh — the four cycle skills and the five agents carry the
+# tests/hooks/test-skills.sh — the four cycle skills and the three agents carry the
 # hooks the CLI and the hooks rely on (plan Task 9, Step 1).
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd -P)"
@@ -40,9 +40,20 @@ check "init warns about the codex stop-review gate" "$(has skills/init/SKILL.md 
 check "init offers to disable Superpowers"  "$(has skills/init/SKILL.md 'superpowers@claude-plugins-official": false')"
 check "pr-review points at docs/compound-v/specs" "$(has skills/pr-review/SKILL.md docs/compound-v/specs)"
 
-for a in v-memory code-archaeologist doc-validator domain-expert reviewer builder; do
+for a in v-memory reviewer builder; do
   check "agents/$a.md exists" "$([ -f "$REPO/agents/$a.md" ] && echo 1 || echo 0)"
 done
+for a in code-archaeologist doc-validator domain-expert; do
+  check "agents/$a.md is gone (folded into the builder)" "$([ -f "$REPO/agents/$a.md" ] && echo 0 || echo 1)"
+done
+check "brainstorm dispatches no pre-flight agents" \
+  "$(grep -qE 'compound-v:(domain-expert|code-archaeologist|doc-validator)' "$REPO/skills/brainstorm/SKILL.md" && echo 0 || echo 1)"
+check "build dispatches the builder"        "$(has skills/build/SKILL.md compound-v:builder)"
+check "build sends fixes to the same builder" "$(has skills/build/SKILL.md SendMessage)"
+check "builder attaches its own plan"       "$(has agents/builder.md 'run plan --id')"
+check "reviewer is capped at 25 turns"      "$(has agents/reviewer.md 'maxTurns: 25')"
+check "review prompt has the probe list"     "$(has skills/verify/review-prompt.md '<probes>')"
+check "review prompt has the skip list"      "$(has skills/verify/review-prompt.md '<skip>')"
 
 check "lint-frontmatter selftest passes" \
   "$(python3 "$REPO/scripts/lint-frontmatter.py" --selftest >/dev/null 2>&1 && echo 1 || echo 0)"

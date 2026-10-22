@@ -7,7 +7,7 @@ from .receipts import status
 from .run import active
 from .usage import run_cost
 
-NEXT = {"brainstorm": "brainstorm", "preflight": "plan", "plan": "plan", "build": "build",
+NEXT = {"brainstorm": "brainstorm", "preflight": "build", "plan": "build", "build": "build",
         "verify": "verify"}
 
 

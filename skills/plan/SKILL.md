@@ -1,11 +1,11 @@
 ---
 name: plan
-description: Use after a Compound V spec is approved and its pre-flights are back. Writes the implementation plan with an acceptance table (behaviour → check), the four checklists answered item by item, tasks with their tests, a task → model table, lanes only for parallel work, and the machine-readable compound-v-plan block. Then attaches it to the run record.
+description: How a Compound V plan is written. The compound-v:builder follows it after its own research, and it can be invoked directly to write or revise a plan. Writes the implementation plan with an acceptance table (behaviour → check), the four checklists answered item by item, tasks with their tests, a task → model table, lanes only for parallel work, and the machine-readable compound-v-plan block. Then attaches it to the run record.
 ---
 
 # Plan
 
-A plan is the set of decisions a builder cannot make alone: which files, which behaviours, which checks prove them. Write it for an engineer who has not seen this conversation. The acceptance table is the contract that both the build and the review are held to.
+A plan is the set of decisions a build cannot make on the fly: which files, which behaviours, which checks prove them. The `compound-v:builder` writes it, after its own domain research and code reading, and then builds from it. Write it for an engineer who has not seen the brainstorm. The acceptance table is the contract that both the build and the review are held to.
 
 All `compound-v.py` calls below are `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" …` with the run's `--id <id>` (the session brief prints it as `Compound V run <id>` if you lost it).
 
@@ -13,15 +13,17 @@ All `compound-v.py` calls below are `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/comp
 
 ## 0. Inputs
 
-`run stage --id <id> --to plan`. Then read, in full: the spec, every pre-flight file of this run (`docs/compound-v/preflight/<date>-<topic>-*.md`), and `checklists.md` in this directory.
+The run is at stage `plan`. Read, in full: the spec and `checklists.md` in this directory, and have the research (builder.md §1) done: the domain requirement table, the code findings with `path:line`, the library verdicts.
 
 ## 1. Write `docs/compound-v/plans/YYYY-MM-DD-<topic>.md`
 
 Sections, in this order:
 
-**Header.** Goal (one sentence), spec path, pre-flight paths, stack, how the app is started.
+**Header.** Goal (one sentence), spec path, stack, how the app is started.
 
-**`## Constraints`.** Every MUST from the pre-flights, one line each with its source (domain row `R3`, `path:line`, a dated library source). Each open owner fact goes in with the assumption the plan makes.
+**`## Research`.** The domain table (`DR#` requirement → source → acceptance row), the open owner facts with the default assumed, and the library verdicts with dated sources.
+
+**`## Constraints`.** Every MUST from the research, one line each with its source (domain row `DR3`, `path:line`, a dated library source). Each open owner fact goes in with the assumption the plan makes.
 
 **`## Acceptance`.** The table both the build and the review are held to:
 
@@ -32,7 +34,7 @@ Sections, in this order:
 | A3 | The app refuses to start in production with the placeholder admin password | test: `test_refuses_placeholder_secret` | F1, O2 |
 
 - One row per behaviour, written so that a stranger could check it. Include the **negative** rows: refusals, expiries, limits, erasure.
-- Every spec requirement, every domain requirement row, and every checklist item that applies ends up as a row.
+- Every spec requirement, every DR row, and every checklist item that applies ends up as a row.
 - Each check names a test (or a live step) by the name the build will give it.
 - The CLI hashes the text from `## Acceptance` to the next `## ` heading. Editing it after receipts exist makes them stale. That is intended, so finish the table here.
 
@@ -50,7 +52,7 @@ Always include the operator guide (checklist O7) as part of a task.
 
 **`## Task → model`.** One row per task: `opus` by default; `sonnet` only for mechanical work with nothing to decide (renames, boilerplate config, copying text the plan already fixes). Give the reason in one line.
 
-**`## Lanes`.** Only when parallel work is chosen, and only when tasks are large, independent and write disjoint files. At this size the default is no lanes: in our benchmark parallel waves were slower and dearer and found nothing more. When used, each task gets exclusive globs, and no glob overlaps another lane's. Shared files (lockfiles, `package.json`, route or migration registries, global styles, the archaeology touch map's **shared** files) belong to one lane, or to a sequential task after the merges.
+**`## Lanes`.** Only when parallel work is chosen, and only when tasks are large, independent and write disjoint files. At this size the default is no lanes: in our benchmark parallel waves were slower and dearer and found nothing more. When used, each task gets exclusive globs, and no glob overlaps another lane's. Shared files (lockfiles, `package.json`, route or migration registries, global styles, and any file more than one task writes) belong to one lane, or to a sequential task after the merges.
 
 ## 2. The `compound-v-plan` block
 
@@ -76,7 +78,7 @@ End the plan with exactly one fenced block tagged `compound-v-plan`, holding JSO
 ## 3. Self-review, then attach
 
 Check, and fix inline:
-1. **Coverage.** Every spec requirement and pre-flight MUST maps to a row, and every row maps to a task and a named check.
+1. **Coverage.** Every spec requirement, DR row and constraint maps to a row, and every row maps to a task and a named check.
 2. **Checklists.** Every item is answered, and every "applies" points at a row.
 3. **Names.** Test names, file paths and commands match across tasks, the table and the block.
 4. **Proportion.** A plan longer than the code it describes has written the code. Keep signatures, test names and values, and drop bodies.
@@ -96,8 +98,8 @@ For a high-stakes plan (payments, auth, personal data at scale, or depth `thorou
 
 ## 5. Hand off
 
-Tell the user in a few lines: the plan path, the number of acceptance rows, lanes or not, and any assumption made for an open owner fact. The approved spec was the gate. Ask again only when the plan contradicts something the user decided. Then:
+Report in a few lines: the plan path, the number of acceptance rows, lanes or not, and any assumption made for an open owner fact. The approved spec was the gate; the plan goes back to the user only when it contradicts something they decided. Then:
 
-`compound-v.py run stage --id <id> --to build`, and invoke `compound-v:build`. Change no code before this point: the Stop hook refuses once when application code changed before the plan was attached and the run moved to build.
+`compound-v.py run stage --id <id> --to build`, and build (the builder continues itself; invoked directly, hand off to `compound-v:build`). Change no code before this point: the Stop hook refuses once when application code changed before the plan was attached and the run moved to build.
 
 Task right-sizing adapted from Superpowers `writing-plans` (MIT, Jesse Vincent).

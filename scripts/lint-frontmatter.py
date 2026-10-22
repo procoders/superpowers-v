@@ -17,8 +17,8 @@ against Claude Code's plugin spec + this project's conventions:
   - `description` <= 500 chars (soft), <= 1024 total frontmatter (hard)
   - No Haiku, except the read-only `v-memory` agent whose tools must be a subset of
     Read, Grep, Glob; no other agent or skill body may name Haiku (v4)
-  - `model: opus` REQUIRED on `agents/*.md` (A5), except the Sonnet pre-flight agents
-    (code-archaeologist, doc-validator, domain-expert) and v-memory
+  - `model: opus` REQUIRED on `agents/*.md` (A5), except v-memory (the pre-flight
+    agents that once ran on Sonnet were folded into the builder, 2026-10-22)
   - `memory`, when present, is exactly `user` | `project` | `local` (3.5.0), and is
     REQUIRED ABSENT on every agent
   - Closing `---` at EOF without a trailing newline is accepted (A6)
@@ -38,15 +38,11 @@ import yaml
 DESCRIPTION_SOFT_MAX = 500
 FRONTMATTER_HARD_MAX = 1024
 
-# v4 model policy (plan Task 9). Opus by default; Sonnet for the three pre-flight
-# agents, whose work is lookups (reading a repository, resolving a library, a bounded
-# web search); Haiku for exactly one agent, the read-only `v-memory` docs search
-# (Oleg, 2026-10-22), and only while its tools are limited to reading.
-SONNET_ELIGIBLE_AGENTS = {
-    "code-archaeologist",   # measures existing code; produces findings, decides nothing
-    "doc-validator",        # resolves libraries and compares versions against the repo
-    "domain-expert",        # ≤4 searches, requirement → source → check
-}
+# v4 model policy. Opus for every agent; Sonnet is chosen per task at dispatch time, never
+# in frontmatter (the Sonnet pre-flight agents were folded into the builder, L1 scheme);
+# Haiku for exactly one agent, the read-only `v-memory` docs search (Oleg, 2026-10-22),
+# and only while its tools are limited to reading.
+SONNET_ELIGIBLE_AGENTS = set()
 HAIKU_ELIGIBLE_AGENTS = {"v-memory"}
 HAIKU_TOOLS = {"Read", "Grep", "Glob"}   # a Haiku agent may read; it may not act
 
@@ -378,11 +374,11 @@ def _selftest() -> int:
         check("a non-listed agent with model sonnet is flagged",
               any("model policy" in i for i in issues_for(
                   "agents/sonnet.md", "---\nname: x\ndescription: d\nmodel: sonnet\n---\nb\n")))
-        check("a listed scanning agent may carry model sonnet",
-              not any("model policy" in i for i in issues_for(
+        check("a former pre-flight agent on sonnet is flagged",
+              any("model policy" in i for i in issues_for(
                   "agents/code-archaeologist.md",
                   "---\nname: code-archaeologist\ndescription: d\nmodel: sonnet\n---\nb\n")))
-        check("a listed scanning agent may still carry model opus",
+        check("an agent may carry model opus",
               not any("model policy" in i for i in issues_for(
                   "agents/doc-validator.md",
                   "---\nname: doc-validator\ndescription: d\nmodel: opus\n---\nb\n")))
@@ -519,8 +515,8 @@ def _selftest() -> int:
         check("an agent whose body names haiku is flagged",
               any("body names 'haiku'" in i for i in issues_for(
                   "agents/x.md", AGENT_OK.replace("body", "dispatch with model haiku"))))
-        check("domain-expert may carry model sonnet",
-              not any("model policy" in i for i in issues_for(
+        check("domain-expert on sonnet is flagged",
+              any("model policy" in i for i in issues_for(
                   "agents/domain-expert.md",
                   "---\nname: domain-expert\ndescription: d\nmodel: sonnet\n---\nb\n")))
         check("reviewer must be opus (sonnet flagged)",

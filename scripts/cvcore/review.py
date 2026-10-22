@@ -62,10 +62,7 @@ def prompt(repo, rec, snapshot_id: str) -> str:
             prior = json.loads(last.read_text(encoding="utf-8"))["findings"]
         except (OSError, ValueError, KeyError):
             prior = []
-        previous = ("<previous_round>\nThis is the last review round. First check each finding "
-                    "from the previous round: report it again with the same id if it is not "
-                    "fixed, and name the fixed ones in the summary. Then look for regressions "
-                    "the fixes introduced.\n" + json.dumps(prior, ensure_ascii=False, indent=1)
+        previous = ("<previous_round>\n" + json.dumps(prior, ensure_ascii=False, indent=1)
                     + "\n</previous_round>")
     slots = {"{request}": rec.get("request") or "(none recorded)",
              "{acceptance}": _section(plan, "Acceptance") or "(no acceptance table)",
