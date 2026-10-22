@@ -18,7 +18,8 @@ from .scope import check
 from .snapshot import ignored_env_digest, tree
 from .usage import run_cost
 
-KEY_PATH = Path.home() / ".claude/compound-v/receipt.key"
+# Inside the repo's git dir: the Claude Code sandbox lets commands write there, not to ~/.claude.
+KEY_PATH = None
 STEPS = ("tests", "review", "live", "scope")
 WAIVABLE = ("live",)
 BLOCKING = ("blocker", "high")
@@ -31,8 +32,16 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
-def _key() -> bytes:
-    path = Path(KEY_PATH)
+def key_path(repo) -> Path:
+    if KEY_PATH is not None:
+        return Path(KEY_PATH)
+    common = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=str(repo),
+                            capture_output=True, text=True, check=True).stdout.strip()
+    return Path(common) / "compound-v" / "receipt.key"
+
+
+def _key(repo) -> bytes:
+    path = key_path(repo)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
         fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -46,10 +55,10 @@ def _key() -> bytes:
     return path.read_bytes()
 
 
-def _mac(receipt: dict) -> str:
+def _mac(repo, receipt: dict) -> str:
     body = json.dumps({k: v for k, v in receipt.items() if k != "mac"}, sort_keys=True,
                       separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    return hmac.new(_key(), body, hashlib.sha256).hexdigest()
+    return hmac.new(_key(repo), body, hashlib.sha256).hexdigest()
 
 
 def _current(repo, rec) -> dict:
@@ -60,7 +69,7 @@ def _current(repo, rec) -> dict:
 def _store(repo, rec, step, cur, fields) -> dict:
     receipt = {"step": step, "run": rec["id"], "at": _now(), "exit": None, "cmd": None,
                "duration_s": None, "tail": "", **cur, **fields}
-    receipt["mac"] = _mac(receipt)
+    receipt["mac"] = _mac(repo, receipt)
     rec["receipts"][step] = receipt
     run.save(repo, rec)
     return receipt
@@ -235,7 +244,7 @@ def status(repo, rec) -> dict:
     out = {"missing": [], "stale": [], "failed": [], "waived": [], "errors": []}
     for step in req:
         r = rec["receipts"].get(step)
-        valid = bool(r) and hmac.compare_digest(str(r.get("mac", "")), _mac(r))
+        valid = bool(r) and hmac.compare_digest(str(r.get("mac", "")), _mac(repo, r))
         current = valid and _bound(rec, step, r) and all(r.get(k) == v for k, v in cur.items())
         if current and r.get("result") == "pass":
             continue

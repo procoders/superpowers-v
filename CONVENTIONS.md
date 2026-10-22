@@ -44,7 +44,7 @@ states it.
 
 - Project state: `docs/compound-v/` only (specs, plans, pre-flights, runs, receipts, the triage log).
   (`scripts/cvcore/run.py:15`)
-- Machine state: `~/.claude/compound-v/` only (the receipt key). (`scripts/cvcore/receipts.py:21`)
+- Per-clone state: `.git/compound-v/` only (the receipt key; the sandbox lets commands write there, not to `~/.claude`). (`scripts/cvcore/receipts.py:21-22`)
 - Per-session hook markers (refused-once, nudge count) are scratch files in the system temp dir, or
   `CV_STATE_DIR`. (`scripts/cvcore/hooks.py:39-43`)
 - Nothing is ever written under `${CLAUDE_PLUGIN_ROOT}`.

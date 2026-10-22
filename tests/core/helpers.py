@@ -47,7 +47,7 @@ def commit_all(repo, msg="change"):
 
 
 def key_path(repo) -> Path:
-    return Path(repo).parent / "home/.claude/compound-v/receipt.key"
+    return Path(repo).resolve() / ".git/compound-v/receipt.key"
 
 
 def cli(repo, *args, stdin=None, env=None):

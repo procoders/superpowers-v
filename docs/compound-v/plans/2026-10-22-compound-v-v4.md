@@ -14,7 +14,7 @@
 
 - Model policy: Opus by default, Sonnet for mechanical execution and lookups, **never Haiku** except the read-only `v-memory` agent, whose frontmatter is `model: haiku` (Oleg, 2026-10-22). Also `claude plugin eval --judge-model sonnet`). Fable only by explicit choice.
 - Python stdlib only, 3.9 floor; hooks in bash with `"shell": "bash"`. Every hook is registered `"<script>" || true`, has `timeout` ≤ 10 s, starts with `trap 'exit 0' EXIT`, and prints a decision only on success.
-- Mutable state lives only in `docs/compound-v/` (project) or `~/.claude/compound-v/` (machine), never under `${CLAUDE_PLUGIN_ROOT}`.
+- Mutable state lives only in `docs/compound-v/` (project) or the repo's git dir `.git/compound-v/` (per clone; the receipt key — the Claude Code sandbox cannot write `~/.claude`, found in the Task 13 smoke), never under `${CLAUDE_PLUGIN_ROOT}`.
 - Enforcement fields (receipts, outcomes, scope verdicts, usage) are written by `scripts/compound-v.py` from real command results, never by the model.
 - No unmeasured numbers in docs or output; dollar figures only from the CLI's own cost record (`cost-state` / `total_cost_usd`), labelled as the CLI's estimate.
 - No personal data in logs. Command output tails stored in receipts are capped at 20 lines.
@@ -163,7 +163,7 @@ Carried as-is: `scripts/compound-v-run-with-timeout.py`, `scripts/lint-frontmatt
 **Files:** Create `scripts/cvcore/receipts.py`, `scripts/cvcore/review.py`, `schemas/review-findings.schema.json`, `skills/verify/review-prompt.md` (the reviewer prompt template, shared by Codex and the Claude reviewer). CLI `receipt tests|live|scope`, `review codex`, `review record`, `waive`, `status`. Test: `tests/core/test_receipts.py`, `tests/core/test_review.py`.
 
 **Interfaces — Consumes:** `snapshot.tree`, `snapshot.ignored_env_digest`, `snapshot.materialize`, `run.*`, `scope.check`, `escalate.classify_diff`, and `scripts/compound-v-run-with-timeout.py` (subprocess, exit 124 = timeout). **Produces:**
-- `receipts.KEY_PATH = ~/.claude/compound-v/receipt.key`: 32 random bytes, created 0600 on first use.
+- `receipts.key_path(repo) = <git common dir>/compound-v/receipt.key` (was `~/.claude/compound-v/`; moved after the Task 13 smoke): 32 random bytes, created 0600 on first use.
 - `receipts.required(rec, repo) -> list[str]`. For light: `["tests", "scope"]`, plus `"live"` if `classify_diff(...).touches_ui`. For full: all four. If `classify_diff` says full while the run is light, the run is escalated: tier becomes full, `receipts` is cleared, and `escalations` gets `{at, reasons}`.
 - `receipts.run_step(repo, rec, step: "tests"|"live"|"scope") -> dict`. tests/live run `test_cmd`/`live_cmd` through run-with-timeout (`timeout_s`, cwd = repo); scope runs `scope.check(base_commit, change_set ∪ lanes)`. It writes `rec["receipts"][step] = {step, result: "pass"|"fail"|"error", exit, cmd, snapshot, ignored_env, acceptance_rev, tier, at, duration_s, tail}` plus `mac` = HMAC-SHA256(key, canonical JSON without `mac`). The tests step also compares `test_files`: any plan-time test file now missing gives `result: "fail"` and `reason: "tests removed: …"`. A step command that is missing for a required step gives `result: "error"` and `reason: "no live_cmd"`.
 - `receipts.record_review(repo, rec, findings_path, reviewer: "codex"|"claude") -> dict`. It validates the findings JSON against the schema's required keys (`snapshot`, `findings[] {id, severity: blocker|high|medium|low, title, evidence, reproduce}`, `summary`). Then:
