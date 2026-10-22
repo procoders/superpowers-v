@@ -5,10 +5,10 @@ import os
 import re
 
 from .gitio import git, zsplit
-from .snapshot import CANON
+from .snapshot import CANON, WORKTREES
 
 EVIDENCE = "docs/compound-v"
-EXCLUDE = f":(exclude){EVIDENCE}"
+EXCLUDES = (f":(exclude){EVIDENCE}", f":(exclude){WORKTREES}")
 
 
 def _braces(glob: str) -> list:
@@ -49,13 +49,14 @@ def matches(path: str, globs) -> bool:
 
 def untracked(repo) -> list:
     return zsplit(git(repo, *CANON, "ls-files", "-z", "--others", "--exclude-standard",
-                      "--", ".", EXCLUDE))
+                      "--", ".", *EXCLUDES))
 
 
-def changed(repo, base) -> list:
-    diff = git(repo, *CANON, "diff", "--name-only", "-z", "--no-renames", "--no-ext-diff",
-               base, "--", ".", EXCLUDE)
-    return sorted(set(zsplit(diff)) | set(untracked(repo)))
+def changed(repo, base, head=None) -> list:
+    revs = [base, head] if head else [base]
+    diff = set(zsplit(git(repo, *CANON, "diff", "--name-only", "-z", "--no-renames",
+                          "--no-ext-diff", *revs, "--", ".", *EXCLUDES)))
+    return sorted(diff if head else diff | set(untracked(repo)))
 
 
 def _escapes(root: str, path: str) -> bool:
@@ -66,8 +67,28 @@ def _escapes(root: str, path: str) -> bool:
     return not (real == root or real.startswith(root + os.sep))
 
 
-def check(repo, base, allow) -> dict:
-    files = changed(repo, base)
+def _committed_links(repo, head, files) -> dict:
+    links, wanted = {}, set(files)
+    for entry in git(repo, "ls-tree", "-r", "-z", head).split(b"\0"):
+        meta, _, name = entry.partition(b"\t")
+        if meta.startswith(b"120000 ") and os.fsdecode(name) in wanted:
+            target = git(repo, "cat-file", "blob", meta.split()[2].decode())
+            links[os.fsdecode(name)] = os.fsdecode(target)
+    return links
+
+
+def _link_escapes(root: str, path: str, target: str) -> bool:
+    real = os.path.normpath(os.path.join(root, os.path.dirname(path), target))
+    return not (real == root or real.startswith(root + os.sep))
+
+
+def check(repo, base, allow, head=None) -> dict:
+    files = changed(repo, base, head)
     root = os.path.realpath(str(repo))
-    bad = [p for p in files if not matches(p, allow) or _escapes(root, p)]
+    if head:
+        links = _committed_links(repo, head, files)
+        bad = [p for p in files if not matches(p, allow)
+               or (p in links and _link_escapes(root, p, links[p]))]
+    else:
+        bad = [p for p in files if not matches(p, allow) or _escapes(root, p)]
     return {"verdict": "blocked" if bad else "pass", "changed": files, "violations": bad}

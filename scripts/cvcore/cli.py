@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import escalate, hud, receipts, review, run, scope, snapshot, usage
+from . import escalate, hud, lanes, receipts, review, run, scope, snapshot, usage
 from .gitio import GitError, repo_root
 
 
@@ -121,6 +121,12 @@ def cmd_cochange(a, repo):
     _out(hud.cochange(repo, a.path, max_commits=a.max_commits, top=a.top))
 
 
+def cmd_lane(a, repo):
+    r = lanes.finish(repo, _pick(repo, a), a.task, a.branch)
+    _out(r)
+    return 0 if r["status"] == "merged" else 1
+
+
 def parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--repo", default=".")
@@ -190,6 +196,11 @@ def parser() -> argparse.ArgumentParser:
     cc.add_argument("--max-commits", type=int, default=500)
     cc.add_argument("--top", type=int, default=10)
     cc.set_defaults(fn=cmd_cochange)
+    ln = sub.add_parser("lane").add_subparsers(dest="action", required=True)
+    lf = ln.add_parser("finish", parents=[withid])
+    lf.add_argument("--task", required=True)
+    lf.add_argument("--branch", required=True)
+    lf.set_defaults(fn=cmd_lane)
     return p
 
 

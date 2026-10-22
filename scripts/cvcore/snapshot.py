@@ -10,6 +10,8 @@ from pathlib import Path
 from .gitio import GitError, git, require_commit, zsplit
 
 EVIDENCE_EXCLUDES = ("docs/compound-v/runs",)
+WORKTREES = ".claude/worktrees"
+UNHASHED = EVIDENCE_EXCLUDES + (WORKTREES,)
 CANON = ("-c", "core.autocrlf=false", "-c", "core.fileMode=true",
          "-c", f"core.excludesFile={os.devnull}", "-c", "core.safecrlf=false")
 ENV_GLOBS = (".env*", "*.env", "*.local.*")
@@ -25,7 +27,7 @@ class SnapshotMismatch(SnapshotError):
 
 
 def _excludes():
-    return [f":(exclude){p}" for p in EVIDENCE_EXCLUDES]
+    return [f":(exclude){p}" for p in UNHASHED]
 
 
 def tree(repo) -> str:
@@ -35,7 +37,7 @@ def tree(repo) -> str:
         # Seeding from HEAD keeps tracked-but-ignored files in the snapshot.
         git(repo, *CANON, "read-tree", "HEAD", env=env)
         git(repo, *CANON, "rm", "-r", "--cached", "-q", "--ignore-unmatch", "--",
-            *EVIDENCE_EXCLUDES, env=env)
+            *UNHASHED, env=env)
         git(repo, *CANON, "add", "-A", "--", ".", *_excludes(), env=env)
         return git(repo, *CANON, "write-tree", env=env).decode().strip()
 

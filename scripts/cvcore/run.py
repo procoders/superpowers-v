@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .gitio import git, require_commit, resolve, zsplit
 from .scope import matches
-from .snapshot import CANON, EVIDENCE_EXCLUDES
+from .snapshot import CANON, UNHASHED
 
 RUNS = "docs/compound-v/runs"
 STAGES = ("brainstorm", "preflight", "plan", "build", "verify", "done")
@@ -47,7 +47,7 @@ def _slug(text: str) -> str:
 
 def hash_test_files(repo, globs) -> dict:
     out = git(repo, *CANON, "ls-files", "-z", "--cached", "--others", "--exclude-standard",
-              "--", ".", *[f":(exclude){p}" for p in EVIDENCE_EXCLUDES])
+              "--", ".", *[f":(exclude){p}" for p in UNHASHED])
     found = {}
     for p in sorted(set(zsplit(out))):
         full = Path(repo) / p

@@ -4,7 +4,7 @@ import os
 import re
 
 from .gitio import git
-from .scope import EXCLUDE, changed, matches, untracked
+from .scope import EXCLUDES, changed, matches, untracked
 from .snapshot import CANON
 
 _F = re.I | re.M
@@ -33,7 +33,7 @@ _BIG = 1 << 20
 
 def _diff(repo, base, *opts) -> bytes:
     return git(repo, *CANON, "diff", *opts, "--no-color", "--no-ext-diff", "--no-textconv",
-               "--no-renames", base, "--", ".", EXCLUDE)
+               "--no-renames", base, "--", ".", *EXCLUDES)
 
 
 def _added(repo, base) -> str:
