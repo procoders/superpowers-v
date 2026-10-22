@@ -23,6 +23,10 @@ One cycle, in this order. Each step is a skill (`/compound-v:<name>`):
    executable review in an isolated checkout with at most one fix round. Each step writes a signed
    receipt bound to the working tree. Outcome: `verified`, `incomplete` or `failed`.
 
+When the change has a user interface, the builder also follows **design**: the project's `DESIGN.md` (Google's
+format) as the one source of the look, shared components instead of copies, a craft floor and a screenshot check.
+Projects with no UI never load it.
+
 Small changes (typo, copy, config) skip straight to **verify** as a light run. Around the cycle:
 **init** (per-project setup), **onboard** (citation-verified knowledge base for an existing repo)
 and **pr-review** (review-only, never edits).
@@ -94,7 +98,7 @@ Plus the band mod `hooks/run-band.tsx` (stage, receipts, run cost, quota footer)
 | `scripts/lint-frontmatter.py` | Agent/skill frontmatter and model-policy lint |
 | `schemas/review-findings.schema.json` | Reviewer output shape |
 | `hooks/*.sh`, `hooks/hooks.json`, `hooks/run-band.tsx` | Hook wrappers and the band |
-| `skills/{brainstorm,plan,build,verify,init,onboard,pr-review}/` | The prose |
+| `skills/{brainstorm,plan,build,design,verify,init,onboard,pr-review}/` | The prose |
 | `agents/{v-memory,builder,reviewer}.md` | Subagents |
 | `tests/core/`, `tests/hooks/` | Tests |
 

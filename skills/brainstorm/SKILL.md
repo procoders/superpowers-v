@@ -56,6 +56,11 @@ When `.claude/compound-v.json` says `"stance": "cost-aware"`, suggest quick. Dep
 
 **Parallel work.** When the depth is `thorough`, or the work is large with clearly independent parts, ask one short question: "May I build independent parts in parallel (Claude Code's Workflow tool, several agents at once)?" Record the answer in the spec as a `Parallel:` line, `yes (owner)` or `no (owner)`. Not asked means `Parallel: no`.
 
+**Identity, new projects with a user interface only.** Ask once: "What is the business called, which contact details
+should clients see, and do you have a logo, colours or a style in mind, or shall I choose?" Record it as an
+`Identity:` line in the spec. Never ask it for an existing project (its look is already there) or for work with no
+user interface (libraries, CLIs, APIs).
+
 Stop asking when every area is covered (answered, marked as your call, or n.a. with a reason).
 
 **What "your call" and "keep it simple" mean.** Choose what a real operator needs day to day, built simply: fewer
@@ -79,6 +84,7 @@ Write `docs/compound-v/specs/YYYY-MM-DD-<topic>.md`, so that a talented builder 
 - Data lifecycle per entity; jurisdiction, data and deployment; security and every form; operations; edge cases.
 - Out of scope (agreed), and what is left to the builder.
 - `Parallel: yes (owner)`, `Parallel: no (owner)`, or `Parallel: no` when it was not asked.
+- `Identity:` the owner's answer, when it was asked.
 
 Then start the run. Pass the user's **original request** on stdin, never a temp file inside the repo (an untracked file there is a scope violation):
 

@@ -71,7 +71,9 @@ criterion. Evidence and the full mapping: `docs/compound-v/preflight/2026-10-22-
 - **U1** Every page has an empty state, an error state and a "no longer valid" state (expired, used, cancelled); back,
   refresh and bookmarks land on the right one. *Hendrickson Count, Navigation*
 - **U2** Form errors: validated on submit, an error summary that takes focus, an inline message saying how to fix it,
-  input kept, `Error:` in the title. *GOV.UK validation; SC 3.3.1, 3.3.3, 4.1.3*
+  input kept, `Error:` in the title. Fields carry the right `type`, `inputmode` and `autocomplete`, and the server
+  normalises a value the same way for storing and for looking it up (a phone typed with and without its prefix finds
+  the same record). *GOV.UK validation; SC 3.3.1, 3.3.3, 4.1.3, 1.3.5*
 - **U3** Keyboard, labels, name/role/value, visible focus, 24 px targets, reflow at 320 px, no re-entry, login without a
   cognitive test. *SC 2.1.1, 1.3.1, 4.1.2, 2.4.7, 2.5.8, 1.4.10, 3.3.7, 3.3.8*
 - **U4** What the interface says is true: notices, privacy text and query-string messages match the stored state, and a
