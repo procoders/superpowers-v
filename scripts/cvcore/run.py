@@ -130,7 +130,7 @@ def save(repo, rec: dict) -> None:
 
 
 @contextmanager
-def _locked(repo, run_id: str):
+def _locked(repo, run_id: str, wait=None):
     # In the git dir, beside the receipt key: never committed, and writable inside the sandbox.
     common = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").decode().strip()
     d = Path(common) / "compound-v" / "locks"
@@ -138,7 +138,7 @@ def _locked(repo, run_id: str):
     fd = os.open(str(d / f"{run_id}.lock"), os.O_CREAT | os.O_RDWR, 0o644)
     try:
         if fcntl:
-            deadline = time.monotonic() + LOCK_WAIT_S
+            deadline = time.monotonic() + (LOCK_WAIT_S if wait is None else wait)
             while True:
                 try:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)

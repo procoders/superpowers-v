@@ -189,6 +189,44 @@ class HooksTest(unittest.TestCase):
         self.assertIsNone(self.stop(active=True))
         self.assertIsNone(self.load(rec)["outcome"])
 
+    def test_stop_never_closes_on_stale_evidence(self):
+        rec = self.start()
+        self.verify(rec)
+        orig = run.update
+
+        def racing(repo, r, fn):
+            if getattr(fn, "__name__", "") == "decide":
+                fresh = run.load(self.repo, rec["id"])
+                fresh["test_cmd"] = "false"
+                run.save(self.repo, fresh)
+                receipts.run_step(self.repo, fresh, "tests")
+            return orig(repo, r, fn)
+        run.update = racing
+        try:
+            out = self.stop()
+        finally:
+            run.update = orig
+        self.assertEqual("block", out["decision"])
+        rec = self.load(rec)
+        self.assertIsNone(rec["outcome"])
+        self.assertEqual(["tests"], receipts.status(self.repo, rec)["failed"])
+
+    def test_stored_verified_never_hides_new_evidence(self):
+        rec = self.start()
+        self.verify(rec)
+        self.assertIsNone(self.stop())
+        self.assertEqual("verified", self.load(rec)["outcome"])
+        helpers.write(self.repo, {"src/a.js": "changed after\n"})
+        self.assertNotEqual("verified", receipts.status(self.repo, self.load(rec))["outcome"])
+
+    def test_receipt_stored_after_stop_closure_reopens(self):
+        rec = self.start()
+        stale = self.load(rec)
+        run.update(self.repo, rec, lambda r: r.update(outcome="incomplete"))
+        receipts.run_step(self.repo, stale, "tests")
+        self.assertIsNone(self.load(rec)["outcome"])
+        self.assertEqual("incomplete", self.load(rec)["outcomes"][-1]["outcome"])
+
     def test_receipt_after_incomplete_reopens_and_can_verify(self):
         rec = self.start()
         self.assertEqual("block", self.stop()["decision"])

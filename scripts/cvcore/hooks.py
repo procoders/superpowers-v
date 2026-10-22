@@ -107,21 +107,24 @@ def stop_hook(payload: dict, repo: Path, budget_s=6.0, state_dir=None):
             return None
         if rec["stage"] not in ("build", "verify") or time.monotonic() - t0 > budget_s:
             return None
-        s = status(repo, rec)
-        if s["outcome"] == "verified":
-            run.update(repo, rec, lambda r: r.update(outcome="verified", stage="done"))
-            return None
-        key, said = f"{tree(repo)}:{rec['stage']}", {}
+        said = {}
 
+        # Judged on the fresh record under its lock, so evidence written meanwhile is never overruled.
         def decide(r):
-            if key in r["stop_refusals"]:
+            if r.get("outcome") or r["stage"] not in ("build", "verify"):
+                return
+            s = said["s"] = status(repo, r, write=False)
+            key = f"{tree(repo)}:{r['stage']}"
+            if s["outcome"] == "verified":
+                r.update(outcome="verified", stage="done")
+            elif key in r["stop_refusals"]:
                 r["outcome"] = "failed" if s["failed"] else "incomplete"
             elif not again:
                 r["stop_refusals"].append(key)
                 said["block"] = True
         run.update(repo, rec, decide)
-        if said:
-            return _block(f"Compound V run {rec['id']} is not verified: {_gaps(s)}. "
+        if said.get("block"):
+            return _block(f"Compound V run {rec['id']} is not verified: {_gaps(said['s'])}. "
                           + CONTINUE_TEXT)
         return None
     except Exception as e:

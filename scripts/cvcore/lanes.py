@@ -22,8 +22,12 @@ def _merging(repo) -> bool:
         return False
 
 
-def _abort(repo) -> None:
-    if _merging(repo):
+def _abort(repo, tip: str) -> None:
+    try:
+        head = git(repo, "rev-parse", "-q", "--verify", "MERGE_HEAD").decode().strip()
+    except GitError:
+        return
+    if head == tip:
         git(repo, "merge", "--abort", check=False)
 
 
@@ -38,6 +42,14 @@ def finish(repo, rec, task, branch) -> dict:
         raise RunError(f"task {task!r} has no lane in this run's plan")
     if not rec.get("test_cmd"):
         raise RunError("the run has no test_cmd to run on the merged tree")
+    wait = 2 * (rec.get("timeout_s") or run.TIMEOUT_S) + 60
+    # One lane gate at a time per repository: a second merge would abort the first one's.
+    with run._locked(repo, "lane-gate", wait=wait):
+        rec.update(run.load(repo, rec["id"]))
+        return _finish(repo, rec, task, branch)
+
+
+def _finish(repo, rec, task, branch) -> dict:
     done = rec.get("lane_state", {}).get(task) or {}
     if done.get("status") == "merged" and done.get("branch") == branch:
         return {"status": "merged", "reason": "already merged", "violations": []}
@@ -64,16 +76,16 @@ def finish(repo, rec, task, branch) -> dict:
     try:
         git(repo, "merge", "--no-ff", "--no-commit", "--no-overwrite-ignore", tip)
     except GitError:
-        _abort(repo)
+        _abort(repo, tip)
         return _refuse(repo, rec, task, branch, "conflict")
     rc, tail, *_ = execute(rec["test_cmd"], repo, rec.get("timeout_s") or run.TIMEOUT_S)
     if rc != 0:
-        _abort(repo)
+        _abort(repo, tip)
         return _refuse(repo, rec, task, branch, "tests failed")
     try:
         git(repo, "commit", "-q", "-m", f"merge lane {task}")
     except GitError as e:
-        _abort(repo)
+        _abort(repo, tip)
         return _refuse(repo, rec, task, branch, f"commit failed: {e}")
     state = {"branch": branch, "base": base, "status": "merged",
              "commit": git(repo, "rev-parse", "HEAD").decode().strip()}

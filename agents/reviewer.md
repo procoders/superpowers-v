@@ -30,12 +30,14 @@ Write `FINDINGS` as one JSON object that matches `${CLAUDE_PLUGIN_ROOT}/schemas/
 ```json
 {"snapshot": "<the snapshot id from the prompt, unchanged>",
  "summary": "<two or three sentences: does this meet the request?>",
+ "coverage": ["0", "1", "2", "3", "4", "5", "6 skipped: no login", "7", "8", "9"],
  "findings": [{"id": "F1", "severity": "blocker|high|medium|low", "title": "...",
    "evidence": "path:line and what you observed", "reproduce": "a command that shows it",
    "file": "path", "line_start": 1, "line_end": 1, "confidence": 0.9,
    "recommendation": "the smallest fix"}]}
 ```
 
+- `coverage` lists only what you ran: each probe id, or `"<n> skipped: <why it does not apply>"`; in round 2, each round-1 finding id you re-checked. A round-1 review without probes 0–4, or one whose budget ran out (say so in `summary`), is recorded as incomplete, never as a pass.
 - Each finding needs `reproduce` (a command) or `evidence` (file:line). A finding you could not reproduce gets `confidence` ≤ 0.5 and says so.
 - **blocker**: unsafe or unusable (auth bypass, data loss, a main flow broken in a real browser, a state change through HEAD or GET, access to another user's data). **high**: an acceptance row or a request item is unmet, a checklist item that applies is violated, an example or placeholder secret works in production, a normaliser rewrites a valid value, or a session survives logout or a credential change. **medium**: an edge case fails, a session survives expiry, any 500 from client input, a public create or lookup with no limit, or erasure that misses a copy. The review prompt's floors are the authority if these ever differ. **low**: everything else. Do not inflate severity, because blocker and high cost the user a fix round.
 - An empty `findings` list is a valid answer, if you actually ran the checks.

@@ -77,7 +77,11 @@ def _receipt(repo, rec, step, cur, fields) -> dict:
 
 def _store(repo, rec, step, cur, fields) -> dict:
     receipt = _receipt(repo, rec, step, cur, fields)
-    run.update(repo, rec, lambda r: r["receipts"].__setitem__(step, receipt))
+
+    def apply(r):
+        run._reopen(r, f"receipt {step}")
+        r["receipts"][step] = receipt
+    run.update(repo, rec, apply)
     return receipt
 
 
@@ -88,19 +92,34 @@ def _escalate(r: dict, reasons) -> None:
         r.setdefault("escalations", []).append({"at": _now(), "reasons": reasons})
 
 
-def required(rec, repo) -> list:
+def required(rec, repo, write=True) -> list:
     diff = classify_diff(repo, rec["base_commit"])
     if rec["tier"] == "light" and diff["tier"] == "full" and rec.get("outcome") is None:
-        run.update(repo, rec, lambda r: _escalate(r, diff["reasons"]))
+        if write:
+            run.update(repo, rec, lambda r: _escalate(r, diff["reasons"]))
+        else:
+            _escalate(rec, diff["reasons"])
     if rec["tier"] == "full":
         return list(STEPS)
     return ["tests", "scope"] + (["live"] if diff["touches_ui"] else [])
 
 
-SANDBOX_SIGNS = re.compile(
-    r"bootstrap_check_in|Permission denied \(1100\)|failed to copy trust settings|listen EPERM"
-    r"|(socket|bind|listen|connect|launch|spawn)[^\n]{0,80}Operation not permitted"
+BROWSER_LAUNCH = re.compile(
+    r"bootstrap_check_in|Permission denied \(1100\)|failed to copy trust settings", re.I)
+SOCKET_LAUNCH = re.compile(
+    r"listen EPERM|(socket|bind|listen|connect|launch|spawn)[^\n]{0,80}Operation not permitted"
     r"|Operation not permitted[^\n]{0,80}(socket|bind|listen|launch|spawn)", re.I)
+TEST_RAN = re.compile(r"\b[1-9]\d* (passed|passing)\b|^\s*(✓|✔|ok \d)", re.I | re.M)
+TEST_RESULT = re.compile(r"\b\d+ (passed|passing|failed|failing)\b|^\s*(✓|✔|✘|×|ok \d|not ok \d)"
+                         r"|^(PASS|FAIL)\b", re.I | re.M)
+ASSERTION = re.compile(r"assert(ion)?(Error| failed)|\bexpected\b|expect\(", re.I)
+
+
+def launch_blocked(text: str) -> bool:
+    if ASSERTION.search(text) or TEST_RAN.search(text):
+        return False
+    return bool(BROWSER_LAUNCH.search(text)) or (
+        bool(SOCKET_LAUNCH.search(text)) and not TEST_RESULT.search(text))
 SANDBOX_REASON = ("the command could not start inside the sandbox — run `compound-v.py receipt "
                   "{step} --id {id}` alone, with no pipe, redirect or chain "
                   "(sandbox.excludedCommands only matches a bare call)")
@@ -157,7 +176,7 @@ def run_step(repo, rec, step) -> dict:
               "result": "pass" if rc == 0 else "fail"}
     if rc in (124, 127):
         fields.update(result="error", reason="timeout" if rc == 124 else "command not found")
-    elif rc != 0 and SANDBOX_SIGNS.search(text):
+    elif rc != 0 and launch_blocked(text):
         fields.update(result="error", reason=SANDBOX_REASON.format(step=step, id=rec["id"]))
     elif tree(repo) != cur["snapshot"]:
         fields.update(result="error",
@@ -180,6 +199,31 @@ def _validate(data) -> None:
             raise RunError("each finding needs id, severity, title, evidence, reproduce")
         if f["severity"] not in SEVERITIES:
             raise RunError(f"finding {f.get('id')}: severity must be one of {SEVERITIES}")
+    if not isinstance(data.get("coverage"), list) or \
+            not all(isinstance(c, str) for c in data["coverage"]):
+        raise RunError("findings JSON needs coverage[]: the probe ids run, or '<n> skipped: <why>'")
+
+
+ROUND1_PROBES = {"0", "1", "2", "3", "4"}
+_OUT_OF_BUDGET = re.compile(r"budget|turns? (ran|run) out|out of turns|no time|not checked", re.I)
+
+
+def coverage_gap(repo, data: dict, rec: dict):
+    cov = [c.strip() for c in data["coverage"]]
+    if any(_OUT_OF_BUDGET.search(c) for c in cov) or _OUT_OF_BUDGET.search(data["summary"]):
+        return "the reviewer ran out of budget or left checks undone"
+    if rec["review_round"] == 0:
+        done = {c.split()[0] for c in cov if c and c.split()[0].isdigit()}
+        missing = sorted(ROUND1_PROBES - done)
+        return f"probes {', '.join(missing)} not covered" if missing else None
+    try:
+        last = Path(repo) / rec["reviews"][-1]["file"]
+        prior = [f["id"] for f in json.loads(last.read_text(encoding="utf-8"))["findings"]
+                 if f.get("severity") in ("blocker", "high", "medium")]
+    except (OSError, ValueError, KeyError, TypeError, IndexError):
+        prior = []
+    missing = [i for i in prior if not any(c.split()[0] == i for c in cov if c)]
+    return f"round-1 findings {', '.join(missing)} not re-checked" if missing else None
 
 
 def findings_path(repo, rec, n) -> Path:
@@ -217,6 +261,12 @@ def record_review(repo, rec, findings_file, reviewer) -> dict:
                 "result": "error", "reason": "no reviewer run recorded", "cmd": reviewer})
             return
         stops[0]["consumed"] = True
+        run._reopen(r, "review")
+        gap = coverage_gap(repo, data, r)
+        if gap:
+            out["r"] = r["receipts"]["review"] = _receipt(repo, r, "review", cur, {
+                "result": "error", "reason": f"review incomplete: {gap}", "cmd": reviewer})
+            return
         n = r["review_round"] + 1
         dest = findings_path(repo, r, n)
         dest.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -282,7 +332,13 @@ def _reviewer_transcript(repo, rec, issued):
                 continue
             with open(meta.with_name(f"agent-{aid}.jsonl"), "rb") as f:
                 body = f.read(4_000_000)
+                f.seek(max(0, f.seek(0, 2) - 262_144))
+                tail = f.read().rstrip(b"\n").rsplit(b"\n", 1)[-1]
             started = _ts(json.loads(body.split(b"\n", 1)[0])["timestamp"])
+            last = json.loads(tail)
+            if last.get("type") != "assistant" or \
+                    last.get("message", {}).get("stop_reason") not in ("end_turn", "stop_sequence"):
+                continue
             for c in issued:
                 dest = str(c["dest"])
                 forms = {dest, dest[len("/private"):] if dest.startswith("/private/") else dest}
@@ -306,7 +362,10 @@ def waive(repo, rec, step, reason: str) -> dict:
         raise RunError("a waiver needs the user's reason")
     run.reopen(repo, rec, f"waive {step}")
     waiver = {"reason": reason.strip(), "at": _now(), "by": "user-in-chat (not machine-verifiable)"}
-    run.update(repo, rec, lambda r: r["waivers"].__setitem__(step, waiver))
+    def apply(r):
+        run._reopen(r, f"waive {step}")
+        r["waivers"][step] = waiver
+    run.update(repo, rec, apply)
     return waiver
 
 
@@ -319,10 +378,10 @@ def budget(rec) -> dict:
             "by_stage": by, "stage_exceeded": over}
 
 
-def status(repo, rec) -> dict:
-    for sid, path in (rec.get("transcripts") or {}).items():
+def status(repo, rec, write=True) -> dict:
+    for sid, path in (rec.get("transcripts") or {}).items() if write else ():
         usage.record(repo, rec, sid, path)
-    req = required(rec, repo)
+    req = required(rec, repo, write)
     cur = _current(repo, rec)
     out = {"missing": [], "stale": [], "failed": [], "waived": [], "errors": []}
     for step in req:
@@ -345,9 +404,7 @@ def status(repo, rec) -> dict:
     exhausted = rec["review_round"] >= MAX_ROUNDS and bool(reviews) \
         and reviews[-1]["result"] != "pass"
     b = budget(rec)
-    if rec.get("outcome"):
-        outcome = rec["outcome"]
-    elif exhausted or b["exceeded"] or out["errors"]:
+    if exhausted or b["exceeded"] or out["errors"]:
         outcome = "incomplete"
     elif not (out["missing"] or out["stale"] or out["failed"]):
         outcome = "verified"
@@ -355,5 +412,8 @@ def status(repo, rec) -> dict:
         outcome = "failed"
     else:
         outcome = "pending"
+    # A stored incomplete/failed stays until new evidence verifies; a stored verified never hides new evidence.
+    if rec.get("outcome") in ("incomplete", "failed") and outcome != "verified":
+        outcome = rec["outcome"]
     return {"outcome": outcome, "required": req, **out, "rounds_exhausted": exhausted,
             "budget": b}

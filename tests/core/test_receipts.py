@@ -11,6 +11,7 @@ import helpers  # noqa: E402
 
 from cvcore import receipts, run, snapshot  # noqa: E402
 
+COVER = [str(i) for i in range(10)] + ["F1"]
 LIVE = "python3 -c \"import sys; sys.exit(int(open('live.rc').read()))\""
 PLAN = """# Plan
 
@@ -74,7 +75,7 @@ class Base(unittest.TestCase):
         if stop:
             receipts.note_reviewer_stop(self.repo, self.reload(), "a1", "compound-v:reviewer")
         path = self.tmp / "findings.json"
-        path.write_text(json.dumps({"snapshot": snap or tid, "summary": "s",
+        path.write_text(json.dumps({"snapshot": snap or tid, "summary": "s", "coverage": COVER,
                                     "findings": findings}))
         return receipts.record_review(self.repo, self.reload(), path, "claude")
 
@@ -135,7 +136,8 @@ class ReceiptsTest(Base):
         self.assertEqual(("error", "no reviewer run recorded"), (r["result"], r["reason"]))
         self.assertTrue(self.reload()["reviewer_stops"][0]["consumed"])
 
-    def subagent(self, base, aid="abc", kind="compound-v:reviewer", started=None, text=None):
+    def subagent(self, base, aid="abc", kind="compound-v:reviewer", started=None, text=None,
+                 finished=True):
         import time
         from datetime import datetime, timezone
         time.sleep(0.005)
@@ -145,8 +147,11 @@ class ReceiptsTest(Base):
             kind if kind.startswith("{") else json.dumps({"agentType": kind, "finished": True}))
         stamp = started or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
         body = text if text is not None else f"CHECKOUT={self.tmp / 'co'}/tree"
-        (sub / f"agent-{aid}.jsonl").write_text(json.dumps(
-            {"type": "user", "timestamp": stamp, "message": {"content": body}}) + "\n")
+        lines = [{"type": "user", "timestamp": stamp, "message": {"content": body}}]
+        if finished:
+            lines.append({"type": "assistant", "timestamp": stamp,
+                          "message": {"stop_reason": "end_turn", "content": [{"type": "text"}]}})
+        (sub / f"agent-{aid}.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
 
     def test_reviewer_found_in_subagent_transcript(self):
         self.steps()
@@ -158,6 +163,7 @@ class ReceiptsTest(Base):
         self.subagent(self.tmp / "proj/s1", aid="other", text="no checkout path here")
         self.subagent(self.tmp / "proj/s1", aid="explore", kind="Explore")
         self.subagent(self.tmp / "proj/s1", aid="broken", kind="{not json")
+        self.subagent(self.tmp / "proj/s1", aid="unfinished", finished=False)
         r = self.review(checkout=False, stop=False)
         self.assertEqual("error", r["result"])
         self.subagent(self.tmp / "proj/s1", aid="good")
@@ -185,7 +191,7 @@ class ReceiptsTest(Base):
 
     def test_codex_reviewer_not_recordable_from_cli(self):
         f = self.tmp / "forged.json"
-        f.write_text(json.dumps({"snapshot": snapshot.tree(self.repo), "summary": "x",
+        f.write_text(json.dumps({"snapshot": snapshot.tree(self.repo), "summary": "x", "coverage": COVER,
                                  "findings": []}))
         r = helpers.cli(self.repo, "review", "record", "--findings", str(f), "--reviewer", "codex")
         self.assertEqual(2, r.returncode)
@@ -194,7 +200,7 @@ class ReceiptsTest(Base):
     def test_codex_findings_need_a_codex_run(self):
         self.steps()
         f = self.tmp / "forged.json"
-        f.write_text(json.dumps({"snapshot": snapshot.tree(self.repo), "summary": "x",
+        f.write_text(json.dumps({"snapshot": snapshot.tree(self.repo), "summary": "x", "coverage": COVER,
                                  "findings": []}))
         r = receipts.record_review(self.repo, self.reload(), f, "codex")
         self.assertEqual(("error", "no reviewer run recorded"), (r["result"], r["reason"]))
@@ -314,6 +320,63 @@ class ReceiptsTest(Base):
         s = self.status()
         self.assertEqual(["tests", "review", "live", "scope"], s["stale"])
 
+    def test_failing_assertion_with_listen_eperm_is_fail(self):
+        rec = self.reload()
+        for out in ("Browser started; AssertionError: page shows listen EPERM",
+                    "  ✘ 1 failed: booking page\\n  error: listen EPERM 127.0.0.1:3000",
+                    "3 passed, 1 failed\\nbootstrap_check_in denied"):
+            rec["live_cmd"] = f"python3 -c \"print('{out}'); raise SystemExit(1)\""
+            run.save(self.repo, rec)
+            self.assertEqual("fail", receipts.run_step(self.repo, self.reload(), "live")["result"],
+                             out)
+        rec["live_cmd"] = "python3 -c \"print('Error: listen EPERM: operation not permitted 0.0.0.0:3000'); raise SystemExit(1)\""
+        run.save(self.repo, rec)
+        self.assertEqual("error", receipts.run_step(self.repo, self.reload(), "live")["result"])
+
+    def test_review_without_coverage_is_incomplete(self):
+        self.steps()
+        for cover, summary in ((["0", "1", "2"], "s"), (COVER, "Budget exhausted after probe 4"),
+                               (COVER[:4] + ["4 skipped: budget"], "s")):
+            tid = snapshot.tree(self.repo)
+            receipts.note_checkout(self.repo, self.reload(), tid, self.tmp / "co")
+            receipts.note_reviewer_stop(self.repo, self.reload(), "a", "compound-v:reviewer")
+            f = self.tmp / "f.json"
+            f.write_text(json.dumps({"snapshot": tid, "summary": summary, "coverage": cover,
+                                     "findings": []}))
+            r = receipts.record_review(self.repo, self.reload(), f, "claude")
+            self.assertEqual("error", r["result"], cover)
+            self.assertIn("review incomplete", r["reason"])
+        self.assertEqual(0, self.reload()["review_round"])
+        self.assertNotEqual("verified", self.status()["outcome"])
+        f.write_text(json.dumps({"snapshot": snapshot.tree(self.repo), "summary": "s",
+                                 "findings": []}))
+        with self.assertRaises(run.RunError):
+            receipts.record_review(self.repo, self.reload(), f, "claude")
+
+    def test_round_two_must_recheck_round_one(self):
+        self.steps()
+        self.assertEqual("fail", self.review("high")["result"])
+        helpers.write(self.repo, {"src/a.js": "export const a = 2\n"})
+        self.steps()
+        global COVER
+        saved, COVER = COVER, ["0", "1", "2", "3", "4"]
+        try:
+            r = self.review()
+        finally:
+            COVER = saved
+        self.assertEqual(("error", 1), (r["result"], self.reload()["review_round"]))
+        self.assertIn("F1 not re-checked", r["reason"])
+        self.assertEqual("pass", self.review()["result"])
+
+    def test_global_excludes_do_not_unexclude_evidence(self):
+        ex = self.tmp / "global-ignore"
+        ex.write_text("docs/compound-v/runs/\n")
+        helpers.sh(self.repo, "config", "core.excludesFile", str(ex))
+        self.steps()
+        self.review()
+        s = self.status()
+        self.assertEqual(([], "verified"), (s["stale"], s["outcome"]))
+
     def test_sandbox_launch_failure_is_error(self):
         rec = self.reload()
         noise = "\\n".join(f"line {i}" for i in range(40))
@@ -357,7 +420,7 @@ class ReceiptsTest(Base):
         receipts.note_checkout(self.repo, self.reload(), snapshot.tree(self.repo), self.tmp / "co")
         receipts.note_reviewer_stop(self.repo, self.reload(), "a1", "compound-v:reviewer")
         f = self.tmp / "f.json"
-        f.write_text(json.dumps({"snapshot": snapshot.tree(self.repo), "summary": "ok",
+        f.write_text(json.dumps({"snapshot": snapshot.tree(self.repo), "summary": "ok", "coverage": COVER,
                                  "findings": []}))
         r = helpers.cli(self.repo, "review", "record", "--findings", str(f), "--reviewer", "claude")
         self.assertEqual(0, r.returncode, r.stderr)

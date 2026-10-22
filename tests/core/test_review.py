@@ -21,6 +21,7 @@ files = sorted(os.path.relpath(os.path.join(d, f), cwd)
                for d, _, fs in os.walk(cwd) for f in fs)
 with open(out, "w") as fh:
     json.dump({"snapshot": "x", "summary": json.dumps(files), "findings": [],
+               "coverage": [str(i) for i in range(10)],
                "prompt_has_request": "add a booking page" in prompt}, fh)
 sys.exit(int(os.environ.get("FAKE_CODEX_RC", "0")))
 '''

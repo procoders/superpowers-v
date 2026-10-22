@@ -86,7 +86,12 @@ all, or erasure that misses a copy (high where the privacy text promises erasure
 
 <output>
 Return only JSON matching the provided schema: `snapshot` = `{snapshot}`, a terse ship/no-ship
-`summary`, and `findings` (empty when you cannot support any). Each finding has `id` (F1, F2, …),
+`summary`, `coverage`, and `findings` (empty when you cannot support any). Each finding has `id` (F1, F2, …),
 `severity`, `title`, `evidence`, `reproduce`, `file`, `line_start`, `line_end` (null when the
 finding is not about one place), `confidence` from 0 to 1, and a concrete `recommendation`.
+`coverage` lists what you actually ran: in round 1 each probe id (`"0"` … `"9"`), or
+`"<n> skipped: <why it does not apply here>"`; in round 2 each round-1 finding id you re-checked
+(`"F1"`). Never list a probe you did not run. If the budget ran out first, say so in `summary`: the
+CLI then records the review as incomplete, which is the honest result. A round-1 review that does not
+cover probes 0–4 is not accepted.
 </output>

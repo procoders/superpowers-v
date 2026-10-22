@@ -88,6 +88,29 @@ class LanesTest(unittest.TestCase):
         self.assertEqual(head, self.rev("HEAD"))
         self.assertEqual("main\n", (self.repo / "src/a/x.js").read_text())
 
+    def test_concurrent_lane_finishes_serialize(self):
+        import threading
+        self.rec.update({"lanes": {"a": ["src/a/**"], "b": ["src/b/**"]},
+                         "test_cmd": "python3 -c \"import time; time.sleep(1)\""})
+        run.save(self.repo, self.rec)
+        wt_b = self.repo / ".claude/worktrees/cv-b"
+        helpers.sh(self.repo, "worktree", "add", "-q", "-b", "lane-b", str(wt_b), "HEAD")
+        self.lane_commit({"src/a/x.js": "a2\n"})
+        helpers.write(wt_b, {"src/b/x.js": "b2\n"})
+        helpers.commit_all(wt_b, "lane b")
+        out = {}
+
+        def go(task, branch):
+            out[task] = lanes.finish(self.repo, run.load(self.repo, self.rec["id"]), task, branch)
+        threads = [threading.Thread(target=go, args=a) for a in (("a", "lane-a"), ("b", "lane-b"))]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual({"a": "merged", "b": "merged"}, {k: v["status"] for k, v in out.items()})
+        self.assertEqual("a2\n", (self.repo / "src/a/x.js").read_text())
+        self.assertEqual("b2\n", (self.repo / "src/b/x.js").read_text())
+
     def test_clean_lane_merges(self):
         self.lane_commit({"src/a/x.js": "a2\n", "src/a/new.js": "n\n"})
         r = self.finish()

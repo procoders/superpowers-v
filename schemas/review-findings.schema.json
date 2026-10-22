@@ -3,28 +3,103 @@
   "title": "Compound V review findings",
   "type": "object",
   "additionalProperties": false,
-  "required": ["snapshot", "summary", "findings"],
+  "required": [
+    "snapshot",
+    "summary",
+    "coverage",
+    "findings"
+  ],
   "properties": {
-    "snapshot": {"type": "string"},
-    "summary": {"type": "string", "minLength": 1},
+    "snapshot": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "coverage": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Round 1: each probe id run (\"0\"…\"9\"), or \"<n> skipped: <why it does not apply>\". Round 2: each round-1 finding id re-checked (\"F1\")."
+    },
     "findings": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "severity", "title", "evidence", "reproduce", "file", "line_start",
-                     "line_end", "confidence", "recommendation"],
+        "required": [
+          "id",
+          "severity",
+          "title",
+          "evidence",
+          "reproduce",
+          "file",
+          "line_start",
+          "line_end",
+          "confidence",
+          "recommendation"
+        ],
         "properties": {
-          "id": {"type": "string", "minLength": 1},
-          "severity": {"type": "string", "enum": ["blocker", "high", "medium", "low"]},
-          "title": {"type": "string", "minLength": 1},
-          "evidence": {"type": ["string", "null"]},
-          "reproduce": {"type": ["string", "null"]},
-          "file": {"type": ["string", "null"]},
-          "line_start": {"type": ["integer", "null"], "minimum": 1},
-          "line_end": {"type": ["integer", "null"], "minimum": 1},
-          "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-          "recommendation": {"type": "string"}
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "blocker",
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reproduce": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "line_start": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "line_end": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "recommendation": {
+            "type": "string"
+          }
         }
       }
     }
