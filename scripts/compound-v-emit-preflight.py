@@ -513,7 +513,8 @@ def _cut_words(text, cap):
 # implementation (a workflow, a playbook, docs/tools/build.py), so it ends greenfield.
 _NON_SOURCE_EXT = (".md", ".markdown", ".txt", ".rst", ".png", ".jpg", ".jpeg", ".gif",
                    ".svg", ".ico", ".pdf")
-_NON_SOURCE_DIRS = (".claude/",)
+# docs/superpowers/ is Compound V's own record (specs, plans, triage JSON), never app code.
+_NON_SOURCE_DIRS = (".claude/", "docs/superpowers/")
 
 
 def is_greenfield(repo):
@@ -943,7 +944,8 @@ def _selftest():
     import tempfile as _tf
     with _tf.TemporaryDirectory() as _g:
         subprocess.run(["git", "init", "-q", _g], check=True)
-        for _rel in ("README.md", "prd.md", "docs/spec.md", ".claude/compound-v.json"):
+        for _rel in ("README.md", "prd.md", "docs/spec.md", ".claude/compound-v.json",
+                     "docs/superpowers/pre-eval/r.json", "docs/superpowers/pre-eval/r.taxonomy-snapshot.yaml"):
             os.makedirs(os.path.dirname(os.path.join(_g, _rel)) or _g, exist_ok=True)
             open(os.path.join(_g, _rel), "w").close()
         subprocess.run(["git", "-C", _g, "add", "-A"], check=True)
