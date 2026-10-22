@@ -72,6 +72,7 @@ End the plan with exactly one fenced block tagged `compound-v-plan`, holding JSO
 
 - Required: `test_cmd`, `live_cmd`, `is_web`, `change_set`. Optional: `setup_cmd` (run in the reviewer's checkout before review), `lanes` (`{"<task>": ["<glob>", …]}`, matching `## Lanes`), `budget_usd` (default 7), `budget_split`, `test_globs`, `timeout_s`.
 - `change_set` must cover every path the build will write, including tests, lockfiles and docs. A write outside it fails the scope check. `docs/compound-v/` is exempt.
+- For a typed or compiled stack, `test_cmd` also runs the type-checker or build first (`tsc --noEmit && …`, `mypy`, `cargo check`): code that only runs through a transpiler is not done.
 - `test_cmd` and `live_cmd` must exit non-zero on failure and run from the repo root without prompts.
 - **Everything they write must be gitignored.** A tests or live step that leaves a non-ignored file behind is recorded as `error`, because it changed the tree it was checking. The first task adds `.gitignore` entries for every output: Playwright `test-results/` and `playwright-report/`, test databases (`*.sqlite`, `*.db` under a test dir), `coverage/`, caches, logs.
 
