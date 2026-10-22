@@ -68,7 +68,7 @@ def _store(repo, rec, step, cur, fields) -> dict:
 
 def required(rec, repo) -> list:
     diff = classify_diff(repo, rec["base_commit"])
-    if rec["tier"] == "light" and diff["tier"] == "full":
+    if rec["tier"] == "light" and diff["tier"] == "full" and rec.get("outcome") is None:
         rec["tier"] = "full"
         rec["receipts"] = {}
         rec.setdefault("escalations", []).append({"at": _now(), "reasons": diff["reasons"]})
@@ -209,14 +209,14 @@ def status(repo, rec) -> dict:
         current = valid and all(r.get(k) == v for k, v in cur.items())
         if current and r.get("result") == "pass":
             continue
-        if step in rec["waivers"] and step in WAIVABLE:
+        if current and r.get("result") == "fail":
+            out["failed"].append(step)
+        elif step in rec["waivers"] and step in WAIVABLE:
             out["waived"].append(step)
         elif not r:
             out["missing"].append(step)
         elif not current:
             out["stale"].append(step)
-        elif r.get("result") == "fail":
-            out["failed"].append(step)
         else:
             out["errors"].append(step)
     reviews = rec.get("reviews", [])

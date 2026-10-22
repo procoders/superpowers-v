@@ -37,6 +37,9 @@ def finish(repo, rec, task, branch) -> dict:
         raise RunError(f"task {task!r} has no lane in this run's plan")
     if not rec.get("test_cmd"):
         raise RunError("the run has no test_cmd to run on the merged tree")
+    done = rec.get("lane_state", {}).get(task) or {}
+    if done.get("status") == "merged" and done.get("branch") == branch:
+        return {"status": "merged", "reason": "already merged", "violations": []}
     tip = resolve(repo, branch)
     root = os.path.realpath(str(repo))
     trees = _worktrees(repo)

@@ -180,6 +180,11 @@ class ReceiptsTest(Base):
         self.assertEqual(("verified", ["live"]), (s["outcome"], s["waived"]))
         with self.assertRaises(run.RunError):
             receipts.waive(self.repo, self.reload(), "tests", "no")
+        helpers.write(self.repo, {"live.rc": "1"})
+        self.steps("live")
+        s = self.status()
+        self.assertEqual((["live"], []), (s["failed"], s["waived"]))
+        self.assertNotEqual("verified", s["outcome"])
 
     def test_ignored_env_change_stales(self):
         helpers.write(self.repo, {".env": "A=1\n"})

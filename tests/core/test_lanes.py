@@ -97,6 +97,7 @@ class LanesTest(unittest.TestCase):
                          .decode().strip())
         self.assertEqual("feature", helpers.sh(self.repo, "branch", "--show-current")
                          .decode().strip())
+        self.assertEqual("merged", self.finish()["status"])
         state = run.load(self.repo, self.rec["id"])["lane_state"]["a"]
         self.assertEqual(("lane-a", self.head, "merged"),
                          (state["branch"], state["base"], state["status"]))
