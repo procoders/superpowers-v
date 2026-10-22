@@ -9,13 +9,16 @@ criterion. Evidence and the full mapping: `docs/compound-v/preflight/2026-10-22-
 
 ## R. The request
 - **R1** Every stated rule is its own acceptance row, in the request's words. "Same rules as X" becomes one row per check
-  X enforces. *A 2.1.3, 2.3.2; WSTG-BUSL-01*
+  X enforces. When two stated rules conflict, or one is ambiguous, the owner decides (one question); a call only fills
+  what the request leaves silent. *A 2.1.3, 2.3.2; WSTG-BUSL-01*
 - **R2** Every number and time rule has rows at just inside, exact and just outside, with the comparison written (`<` or
   `≤`), in the rule's own unit at full precision and in the time zone that governs it. Read the phrase: "up to N before"
   allows the action while at least N remains (exactly N is allowed); "at least N" is ≥; "within N" is ≤; "more/less than"
   are strict. *Hendrickson Boundaries; A 2.2.1*
-- **R3** A change to existing code: every rule the old path enforces is listed and has a row on the new path, and the
-  existing tests pass unchanged. *WSTG-BUSL-06*
+- **R3** Extend, don't fork: each rule is enforced in one place, and new behaviour goes through it (the existing validation
+  and write path) instead of copying it. Every existing operation on what the change touches (edit, delete, retire,
+  erase, export, list, migrate, background jobs) has a row for the new data, state or relation, and the existing tests
+  pass unchanged. *WSTG-BUSL-06; DRY*
 - **R4** No restriction beyond the request. A protective limit is marked as the builder's call, throttles abuse, and never
   refuses use the stated rules allow. *A 6.1.1*
 - **R5** The jurisdiction's duties for this audience (privacy notice, consumer notices, accessibility) are each a row, or
@@ -42,7 +45,7 @@ criterion. Evidence and the full mapping: `docs/compound-v/preflight/2026-10-22-
 - **V3** No personal data in URLs, logs or third-party calls; pages with personal data send `Cache-Control: no-store`;
   data files and backups are not world-readable. *A 14.2.1, 14.2.3, 14.3.2, 16.2.5; CWE-732*
 
-## S. Security
+## S. Security (for every new route or step too: it carries the same protections as its nearest existing sibling)
 - **S1** Fails closed: no default, example or placeholder secret, account or contact detail works in production, which
   refuses to start without real ones. Debug off. *A 13.2.3, 6.3.2, 15.2.3, 13.4.2, 16.5.3*
 - **S2** Authorization is checked server-side on every object, field and function: deny by default; one user can never read
@@ -68,8 +71,10 @@ criterion. Evidence and the full mapping: `docs/compound-v/preflight/2026-10-22-
   input kept, `Error:` in the title. *GOV.UK validation; SC 3.3.1, 3.3.3, 4.1.3*
 - **U3** Keyboard, labels, name/role/value, visible focus, 24 px targets, reflow at 320 px, no re-entry, login without a
   cognitive test. *SC 2.1.1, 1.3.1, 4.1.2, 2.4.7, 2.5.8, 1.4.10, 3.3.7, 3.3.8*
-- **U4** Every claim the interface, notices or privacy text makes (query-string notices included) is true of the stored
-  state. *HICCUPS Claims; GDPR 12*
+- **U4** What the interface says is true: notices, privacy text and query-string messages match the stored state, and a
+  confirmation step commits exactly what the user saw and approved — if anything changed since, it shows the difference
+  instead of committing something else. From every step, the failure of its precondition included, the user can reach
+  the alternatives. *HICCUPS Claims; GDPR 12; Hendrickson Interrupt*
 
 How a row is proven is the pipeline's job, not another item: each row's test asserts stored state, and a real-browser
 test of the main forms is the plan's `live_cmd`.

@@ -42,7 +42,10 @@ Budget: at most 20 turns. Run them in this order:
    request's words, not by the spec that documents the change.
 1. Boundaries: every number or time rule at −1 unit / exact / +1 unit, in the request's unit and its governing time zone
    ("up to N before" allows exactly N); a DST-crossing case where one exists.
-2. Rule parity: for each "same as X" or reused flow, list X's checks from the code and run each one on the new path.
+2. Rule parity and old operations × new data: for each "same as X" or reused flow, list X's checks from the code and
+   run each one on the new path; then run every existing operation (edit, delete, retire, erase, export, list) on the
+   data the change creates, and call each new route with its sibling's protections removed (no session, no token,
+   over the limit). A rule re-implemented instead of reused is worth reading for drift.
 3. Abuse with rotating identity: many creates from one source with invented identifiers; addresses inside one IPv6 /64;
    a spoofed `X-Forwarded-For`; one code or token guessed from many sources.
 4. Method and byte sweep: every route × GET / HEAD / OPTIONS / an unknown verb, then bad %-encoding, multibyte tokens, a
