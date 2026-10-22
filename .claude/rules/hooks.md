@@ -5,22 +5,14 @@ paths:
 
 # Hooks
 
-Sourced from `CONVENTIONS.md` §"Shell scripts and hooks". (`CONVENTIONS.md:102-111`)
-
-- Every `hooks/*.sh` must be executable; CI fails the build on one that is not.
-  (`.github/workflows/validate.yml:216-225`)
-- `shellcheck` runs over `hooks/*.sh` **and** `scripts/compound-v-*.sh`; both must be clean.
-  (`.github/workflows/validate.yml:227-230`)
-- Every hook registration carries `"shell": "bash"` — the documented optional field — so these bash
-  scripts are not handed to PowerShell on a Windows box with no Git Bash. (`hooks/hooks.json:2`)
-- A hook that can block the turn carries a `|| true` suffix in its registration: a syntax error is
-  fatal before any in-script trap can run, so the registration itself must neutralize it.
-  (`hooks/hooks.json:3`)
-- The `PreToolUse` lane guard deliberately carries no `|| true` — a non-zero `PreToolUse` exit is not
-  a deny, so copying the `Stop` idiom there would be cargo-culting. (`hooks/hooks.json:4`)
-- Shell-command inspection is a supplement, never a replacement: a deny that can be walked around
-  (`eval`, an interpreter one-liner, a variable holding the path) leaves the git-derived scope gate as
-  the authority. (`hooks/lane-guard.sh:24-30`)
-- Without a run's `lane-map.json` the guard resolves no job, fails open, and silently allows every
-  write — which is why the guard is a floor and not the enforcement.
-  (`skills/compound-v/state-machine.md:166`)
+- Every hook script starts with `trap 'exit 0' EXIT` and prints a decision only on success.
+  (`CONVENTIONS.md:36-37`, `hooks/stop.sh:2`)
+- Every registration carries `"shell": "bash"`, a timeout of at most 10 s and a `|| true` suffix,
+  the guard included, so a parse error cannot block a stop or reject a prompt.
+  (`CONVENTIONS.md:38-39`, `hooks/hooks.json:2`)
+- The scripts stay thin wrappers; the decisions live in `scripts/cvcore/hooks.py`.
+  (`CONVENTIONS.md:41`, `hooks/stop.sh:5`)
+- The Stop hook refuses an unverified run once per tree and stage, then lets the stop through and
+  records the run incomplete or failed. (`CONVENTIONS.md:40`, `scripts/cvcore/hooks.py:81-89`)
+- Hooks run Python with `-I -B`, so no bytecode lands next to the scripts.
+  (`CONVENTIONS.md:55-56`)

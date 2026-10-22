@@ -3,21 +3,15 @@ paths:
   - "docs/**/*.md"
 ---
 
-# Generated and working docs
+# Docs
 
-Sourced from `CONVENTIONS.md` §"Doc placement" and §"No fabricated metrics (anti-ruflo)".
-  (`CONVENTIONS.md:123-134`, `CONVENTIONS.md:79-87`)
-
-- Compound V writes to a flat, predictable structure under `docs/superpowers/`.
-  (`skills/compound-v/SKILL.md:224-226`)
-- Onboarding's own output goes to `docs/compound-v/architecture/*` plus the root `CONVENTIONS.md`,
-  `AGENTS.md` and the `CLAUDE.md` bridge. (`skills/onboard/reference.md:7-10`)
-- Architecture prose is **read-then-cite**: every claim carries a `file:line` citation, and a cited
-  path that does not resolve strictly INSIDE this repo — or whose range is out of bounds — is
-  blocking; the claim is regenerated or dropped, never shipped.
-  (`skills/onboard/reference.md:92-96`)
-- Every intra-repo markdown link must resolve. The dead-link scan runs **last** in its job so
-  cross-refs to files authored by later batches resolve at integration time.
-  (`.github/workflows/validate.yml:232-234`, `.github/workflows/validate.yml:271-274`)
-- Never print a token-cost or savings number you cannot measure — the anti-ruflo grep covers `docs/`
-  as well as `scripts/`. (`.github/workflows/validate.yml:185-214`)
+- Never write a cost, time, token or savings number that was not measured; every number names its
+  source, and salon numbers come only from `docs/v4/salon-report.md`. (`CONVENTIONS.md:8-9`)
+- Dollar figures are the CLI's own cost record, labelled "the CLI's estimate"; an unknown cost stays
+  `null`. (`CONVENTIONS.md:10-13`)
+- Project state lives under `docs/compound-v/` (specs, plans, pre-flights, runs).
+  (`CONVENTIONS.md:45-46`, `scripts/cvcore/run.py:15`)
+- Run records under `docs/compound-v/runs/` are written by the CLI only; never edit them by hand.
+  (`CONVENTIONS.md:30-31`, `scripts/cvcore/hooks.py:217-236`)
+- Onboard output goes to `docs/compound-v/architecture/`, and every claim there carries a `file:line`
+  citation that must resolve. (`skills/onboard/SKILL.md:3`, `skills/onboard/SKILL.md:25`)
