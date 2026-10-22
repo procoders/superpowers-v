@@ -1,0 +1,104 @@
+---
+name: verify
+description: Compound V verification (not the native /verify). Use when a Compound V build is finished, and after any small change (typo, copy, config) in a project set up for Compound V. Runs the project's tests, the real-browser or main-flow check, the scope check and, for full runs, an executable review in an isolated checkout, with at most one fix round. Each step writes a tree-bound receipt. Reports verified, incomplete or failed, and says done only when verified.
+---
+
+# Verify
+
+The CLI is the authority here, not you. Each step runs a real command and writes a signed receipt bound to the exact working tree. An edit after a receipt makes it stale. You run the steps, fix what fails, and report what the CLI says. All calls are `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" … --id <id>`.
+
+## 0. Find or start the run
+
+`compound-v.py run show` prints the open run for this session. Take its `id`.
+
+**No run, after a small change** (typo, copy, config): start a light run whose `--change-set` globs cover exactly the files you meant to change (`git status --short` shows them). Pass the user's request on stdin:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" run start --tier light \
+  --change-set 'README.md' --request-file - <<'REQUEST'
+<the user's request, verbatim>
+REQUEST
+```
+
+A light run needs `tests` and `scope`, plus `live` when the diff touches UI. It takes `test_cmd` from `.claude/compound-v.json`. If the stage is `build`, run `run stage --id <id> --to verify` first.
+
+**Escalation.** The CLI reclassifies the diff by its content (auth, sessions, payments, personal data, new endpoints or forms, a big or binary diff). A light run can become full, and its receipts are then cleared. Tell the user why, in one line with the CLI's reasons, and do the full steps. Without a plan, the review judges against the request alone.
+
+## 1. The steps, in this order
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" receipt tests --id <id>
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" receipt live  --id <id>   # when required
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" receipt scope --id <id>
+```
+
+Each one prints its receipt: `result` is `pass`, `fail` or `error`, followed by the command's exit code and the last lines of its output.
+- **fail**: fix the cause (§3), then run all the steps again. A fix changes the tree, so the earlier receipts are stale.
+- **scope fail**: a file outside `change_set` (or outside its lane) changed. Revert it, or, when it belongs to the work, add its glob in the plan block and rerun `run plan`. Never hide a write.
+- **tests fail with `tests removed`**: a test that existed when the plan was attached is gone. Restore it.
+- **live error, browser cannot run** (no browser binary, no display, sandbox): ask the user once whether to waive the browser check, saying what will not have been checked. Only on their yes: `compound-v.py waive live --id <id> --reason "<their words>"`. A failing browser test is a failure, never a reason to waive.
+
+## 2. Executable review (full runs)
+
+Required for full runs, at most two rounds. Read `reviewer` from `run show` (`codex` or `claude`; empty means `claude`).
+
+**Codex:** `compound-v.py review codex --id <id>`. The CLI materializes the tree, runs Codex there, and records the result.
+
+**Claude** (the default):
+
+```bash
+D="$(mktemp -d)"
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" checkout --dest "$D/tree"   # prints {"tree": ..., "dest": ...}
+```
+
+Fill `${CLAUDE_PLUGIN_ROOT}/skills/verify/review-prompt.md`:
+- `{request}`: the run record's `request` (the user's original words);
+- `{acceptance}`: the plan's `## Acceptance` table (`none: light run` without a plan);
+- `{checklists}`: `${CLAUDE_PLUGIN_ROOT}/skills/plan/checklists.md` together with the plan's `## Checklists` answers;
+- `{snapshot}`: the `tree` that `checkout` printed;
+- `{setup_cmd}`: the plan's `setup_cmd`, or `none`.
+
+Dispatch the `compound-v:reviewer` agent with the filled prompt, `CHECKOUT=$D/tree`, `FINDINGS=$D/findings.json`, and the round (for round 2, also round 1's findings file under `docs/compound-v/runs/`). The findings file must stay outside the repo: inside it, the file would change the tree and stale the review. Then:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" review record --id <id> --findings "$D/findings.json" --reviewer claude
+```
+
+The CLI checks that the findings belong to the current tree, stores them under `docs/compound-v/runs/`, and passes the review only when there are no blocker or high findings.
+
+## 3. The fix round: exactly one
+
+When review 1 has blocker or high findings:
+1. `run stage --id <id> --to build`. Fix every blocker and high finding, and the cheap mediums. Each fix comes with a test that would have caught it.
+2. `run stage --id <id> --to verify`. Run all of §1 again, then review round 2 (§2).
+3. When round 2 still has blocker or high findings, the run ends **incomplete**, with those findings recorded. There is no third review, and nothing is called fixed without a review.
+
+After the last review, edit nothing. An edit stales every receipt, and no review round is left to renew them.
+
+## 4. Status and the report
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" status --id <id>
+```
+
+The exit code is the outcome: 0 verified, 3 pending, 4 incomplete, 5 failed. Each one is a normal answer, so read the JSON (`missing`, `stale`, `failed`, `waived`, `budget`). Pending means a step is still missing or stale: go back to §1.
+
+Report to the user:
+- the **outcome** in the first line, then each step's state;
+- review findings still open, and acceptance rows unmet or untested;
+- waivers, quoted, marked "waived by you in chat, not machine-checked";
+- cost: `budget.spent` in USD, labelled "the CLI's estimate", against `budget.limit`, or "unknown" when it is null. Codex time is recorded separately and is not in that figure.
+
+Say **done** only when the outcome is `verified`. For incomplete or failed, name the step and the reason. When the run's escalation reasons include `auth` or `payments`, or the depth was `thorough`, suggest the native `/security-review` as an optional extra, not a receipt.
+
+The Stop hook refuses the first stop of an unverified run, once, with the reason. Continue with this skill. If you are waiting on the user or a step cannot run, say so and stop again. The run is then recorded incomplete.
+
+## Common failures
+
+| Claim | What it needs |
+|---|---|
+| "Tests pass" | A current `tests` receipt with result `pass`, not a run you remember |
+| "Works in the browser" | A current `live` receipt, or the user's quoted waiver |
+| "Review fixed" | Round 2 recorded with no blocker or high findings |
+| "Done" | `status` exits 0 |
+| "Just one more tweak after review" | It stales every receipt, and no round is left |

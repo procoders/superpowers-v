@@ -15,11 +15,12 @@ against Claude Code's plugin spec + this project's conventions:
     subtrees `.claude/rules/**` and `.claude/agent-memory{,-local}/**` are exempt from
     both, while `.claude/agents|commands|skills/**` classify normally — 3.5.0)
   - `description` <= 500 chars (soft), <= 1024 total frontmatter (hard)
-  - No Haiku model assignment (project policy)
-  - `model: opus` REQUIRED on `agents/*.md` (A5) — the documented model policy
-    (Opus default; execution-layer models never live in frontmatter)
+  - No Haiku, except the read-only `v-memory` agent whose tools must be a subset of
+    Read, Grep, Glob; no other agent or skill body may name Haiku (v4)
+  - `model: opus` REQUIRED on `agents/*.md` (A5), except the Sonnet pre-flight agents
+    (code-archaeologist, doc-validator, domain-expert) and v-memory
   - `memory`, when present, is exactly `user` | `project` | `local` (3.5.0), and is
-    REQUIRED ABSENT on the two agents that write inside a declared lane
+    REQUIRED ABSENT on every v4 agent (v3 reviewers exempt until Task 11)
   - Closing `---` at EOF without a trailing newline is accepted (A6)
   - Common YAML pitfalls (unquoted globs in `paths`)
 
@@ -37,16 +38,25 @@ import yaml
 DESCRIPTION_SOFT_MAX = 500
 FRONTMATTER_HARD_MAX = 1024
 
-# Agents whose work is SCANNING — reading a repository, resolving a library, comparing a
-# declared version against the current one — and which may therefore carry
-# `model: sonnet`. Every other agent, and every reviewer without exception, stays Opus.
-# Set 2026-09-02. To revert one, delete its name here and change its frontmatter back;
-# the linter fails until both agree, which is the point.
+# v4 model policy (plan Task 9). Opus by default; Sonnet for the three pre-flight
+# agents, whose work is lookups (reading a repository, resolving a library, a bounded
+# web search); Haiku for exactly one agent, the read-only `v-memory` docs search
+# (Oleg, 2026-10-22), and only while its tools are limited to reading.
 SONNET_ELIGIBLE_AGENTS = {
     "code-archaeologist",   # measures existing code; produces findings, decides nothing
     "doc-validator",        # resolves libraries and compares versions against the repo
-    "transport",            # runs one clamped pipeline command and returns its JSON; decides nothing
+    "domain-expert",        # ≤4 searches, requirement → source → check
 }
+HAIKU_ELIGIBLE_AGENTS = {"v-memory"}
+HAIKU_TOOLS = {"Read", "Grep", "Glob"}   # a Haiku agent may read; it may not act
+
+# v3 agents still in the tree until plan Task 11 deletes them. They keep the v3 rules
+# (transport on Sonnet; `memory: project` on the two reviewers) so the tree lints clean
+# in between. Task 11 deletes this set together with the files.
+V3_LEGACY_AGENTS = {"implementer", "parallel-dispatcher", "partition-reviewer",
+                    "spec-reviewer", "transport"}
+V3_LEGACY_SONNET = {"transport"}
+V3_LEGACY_MEMORYLESS = {"implementer", "parallel-dispatcher"}
 
 # Claude Code's native persistent subagent memory (3.5.0). The field takes exactly
 # three scopes, each naming a directory the harness creates on first write:
@@ -57,16 +67,15 @@ SONNET_ELIGIBLE_AGENTS = {
 # unrecognised value and the agent launches with no memory while its file claims one.
 MEMORY_SCOPES = ("user", "project", "local")
 
-# The two agents that MUST NOT carry `memory:` at all. Both write inside a declared
-# file lane while the git-derived scope gate measures the result, and a memory write
-# lands in `.claude/agent-memory/<name>/` — outside that lane in every manifest. Giving
-# either one memory would mean the agent's own note-taking is denied by
-# `hooks/lane-guard.sh` and BLOCKS its job at the scope gate. Their prior-failure
-# evidence arrives through V-memory `recall-check` instead, which is read-only.
-MEMORYLESS_AGENTS = {
-    "implementer",           # writes code inside one job lane
-    "parallel-dispatcher",   # executes a decided manifest; acquires no opinions mid-dispatch
-}
+# v4: no agent carries `memory:` (plan Task 9). Project knowledge lives in
+# docs/compound-v/ and is read on demand by `v-memory`; a per-agent memory directory
+# would be a second, unreviewed store. `memoryless(name)` is True for every agent
+# except the v3 reviewers that Task 11 deletes.
+def memoryless(name: str) -> bool:
+    if name in V3_LEGACY_AGENTS:
+        return name in V3_LEGACY_MEMORYLESS
+    return True
+
 
 # Path classes (relative to the lint root) that MUST carry frontmatter (A4).
 CLASS_AGENT = "agent"
@@ -202,10 +211,16 @@ def lint_file(path: pathlib.Path, rel=None) -> list:
             f"description is {len(desc)} chars (soft max {DESCRIPTION_SOFT_MAX})"
         )
 
-    # Project policy: no Haiku
+    # Project policy: no Haiku, except the read-only v-memory agent (checked below).
     model = str(data.get("model") or "").strip().lower()
-    if "haiku" in model:
+    agent_name = str(data.get("name") or "").strip() if cls == CLASS_AGENT else ""
+    if "haiku" in model and agent_name not in HAIKU_ELIGIBLE_AGENTS:
         issues.append(f"model '{model}' contains 'haiku' — project policy forbids Haiku")
+    # A prompt that names Haiku is a model choice too: only v-memory's own file may.
+    body = txt[end + 5:]
+    if (cls in (CLASS_AGENT, CLASS_SKILL) and agent_name not in HAIKU_ELIGIBLE_AGENTS
+            and "haiku" in body.lower()):
+        issues.append("body names 'haiku' — only the v-memory agent may use Haiku")
 
     # Project policy (A5, revised by the maintainer 2026-09-02): agents carry
     # `model: opus`, EXCEPT the named scanning agents, which may carry `model: sonnet`.
@@ -221,8 +236,13 @@ def lint_file(path: pathlib.Path, rel=None) -> list:
     # (which takes precedence over frontmatter). A static `model: fable` would spend the
     # top model on every routine pre-flight.
     if cls == CLASS_AGENT:
-        name = str(data.get("name") or "").strip()
-        allowed = ("opus", "sonnet") if name in SONNET_ELIGIBLE_AGENTS else ("opus",)
+        name = agent_name
+        if name in HAIKU_ELIGIBLE_AGENTS:
+            allowed = ("haiku", "sonnet", "opus")
+        elif name in SONNET_ELIGIBLE_AGENTS or name in V3_LEGACY_SONNET:
+            allowed = ("opus", "sonnet")
+        else:
+            allowed = ("opus",)
         if model not in allowed:
             found = f"'{model}'" if model else "no model field"
             issues.append(
@@ -230,15 +250,25 @@ def lint_file(path: pathlib.Path, rel=None) -> list:
                 f"(found {found}) — project model policy"
             )
 
-        # A lane-writing agent must carry NO memory. See MEMORYLESS_AGENTS above:
-        # its memory directory is outside its `write_allowed` in every manifest, so
-        # the note it tried to take is the out-of-lane write that BLOCKS its job.
-        if name in MEMORYLESS_AGENTS and "memory" in data:
+        # The Haiku agent reads and nothing else: its tools must be a non-empty subset
+        # of Read, Grep, Glob. No `tools` field means every tool, which is refused.
+        if name in HAIKU_ELIGIBLE_AGENTS and model == "haiku":
+            raw = data.get("tools")
+            tools = ([t.strip() for t in raw.split(",")] if isinstance(raw, str)
+                     else [str(t).strip() for t in raw] if isinstance(raw, list) else [])
+            tools = [t for t in tools if t]
+            extra = sorted(set(tools) - HAIKU_TOOLS)
+            if not tools or extra:
+                issues.append(
+                    f"agent '{name}' runs on Haiku, so its tools must be limited to "
+                    f"Read, Grep, Glob (found {', '.join(extra) if extra else 'no tools field'})"
+                )
+
+        if memoryless(name) and "memory" in data:
             issues.append(
                 f"agent '{name}' must NOT carry a 'memory' field (found "
-                f"{data.get('memory')!r}) — it writes inside a declared lane, and its "
-                "memory directory is outside that lane, so the write is denied by the "
-                "lane guard and BLOCKS the job at the scope gate"
+                f"{data.get('memory')!r}) — v4 keeps project knowledge in "
+                "docs/compound-v/, read on demand by v-memory"
             )
 
     # `maxTurns` (3.4.0) — the turn cap an agent definition carries natively. It is
@@ -469,6 +499,52 @@ def _selftest() -> int:
         check("memory stays OPTIONAL on every other agent",
               issues_for("agents/plain.md",
                          "---\nname: whatever\ndescription: d\nmodel: opus\n---\nb\n") == [])
+
+        # v4 (plan Task 9): Haiku only for v-memory, and only with read tools.
+        VM = "---\nname: v-memory\ndescription: d\nmodel: haiku\n%s---\nb\n"
+        check("v-memory on haiku with Read, Grep, Glob is clean",
+              issues_for("agents/v-memory.md", VM % "tools: Read, Grep, Glob\n") == [])
+        check("v-memory on haiku with a YAML tools list is clean",
+              issues_for("agents/v-memory.md",
+                         VM % "tools:\n  - Read\n  - Grep\n") == [])
+        check("v-memory on haiku with Bash is flagged",
+              any("limited to" in i for i in issues_for(
+                  "agents/v-memory.md", VM % "tools: Read, Grep, Bash\n")))
+        check("v-memory on haiku with no tools field is flagged",
+              any("limited to" in i for i in issues_for("agents/v-memory.md", VM % "")))
+        check("v-memory body may name haiku",
+              issues_for("agents/v-memory.md",
+                         "---\nname: v-memory\ndescription: d\nmodel: haiku\n"
+                         "tools: Read, Grep, Glob\n---\nRuns on Haiku.\n") == [])
+        check("any other agent on haiku is flagged",
+              any("haiku" in i for i in issues_for(
+                  "agents/reviewer.md",
+                  "---\nname: reviewer\ndescription: d\nmodel: haiku\n"
+                  "tools: Read\n---\nb\n")))
+        check("a skill whose body names haiku is flagged",
+              any("body names 'haiku'" in i for i in issues_for(
+                  "skills/foo/SKILL.md",
+                  "---\nname: s\ndescription: d\n---\nUse a Haiku subagent.\n")))
+        check("an agent whose body names haiku is flagged",
+              any("body names 'haiku'" in i for i in issues_for(
+                  "agents/x.md", AGENT_OK.replace("body", "dispatch with model haiku"))))
+        check("domain-expert may carry model sonnet",
+              not any("model policy" in i for i in issues_for(
+                  "agents/domain-expert.md",
+                  "---\nname: domain-expert\ndescription: d\nmodel: sonnet\n---\nb\n")))
+        check("reviewer must be opus (sonnet flagged)",
+              any("model policy" in i for i in issues_for(
+                  "agents/reviewer.md",
+                  "---\nname: reviewer\ndescription: d\nmodel: sonnet\n---\nb\n")))
+        check("a v4 agent with memory is flagged",
+              any("must NOT carry a 'memory' field" in i for i in issues_for(
+                  "agents/domain-expert.md",
+                  "---\nname: domain-expert\ndescription: d\nmodel: sonnet\n"
+                  "memory: project\n---\nb\n")))
+        check("a v3 legacy reviewer may still carry memory until Task 11",
+              issues_for("agents/spec-reviewer.md",
+                         "---\nname: spec-reviewer\ndescription: d\nmodel: opus\n"
+                         "memory: project\n---\nb\n") == [])
 
         # unchanged policies still hold
         check("haiku still rejected anywhere",
