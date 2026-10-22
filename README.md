@@ -24,8 +24,8 @@ the checklists and the proof.
 3. **Plan** (`/compound-v:plan`). Tasks with their tests, an **acceptance table** (behaviour → check),
    four checklists answered item by item (data lifecycle, every page and state, every form and
    endpoint, operations), and a task → model table.
-4. **Build** (`/compound-v:build`). Native Claude Code: one agent by default, tests written with the
-   code.
+4. **Build** (`/compound-v:build`). Native Claude Code: one fresh `builder` subagent by default (it starts from the
+   plan, not from the whole conversation), tests written with the code.
 5. **Verify** (`/compound-v:verify`). The steps below, then one report.
 
 Small changes (a typo, copy, a config value) skip straight to verify as a **light** run. You do not
@@ -89,7 +89,7 @@ earlier receipts are cleared.
 
 ## Parallel lanes
 
-One agent builds by default. When the plan has large, independent tasks that write disjoint files, it
+One `builder` subagent builds by default. When the plan has large, independent tasks that write disjoint files, it
 can declare **lanes**: each task gets exclusive file globs and runs as a native Claude Code subagent
 in its own worktree. Nothing merges on trust: `compound-v.py lane finish` checks that the lane stayed
 in its globs, merges it, and runs the tests on the merged tree, or refuses with the reason (outside the

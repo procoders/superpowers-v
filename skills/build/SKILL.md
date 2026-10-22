@@ -5,7 +5,7 @@ description: Use when a Compound V run has an attached plan and is at stage buil
 
 # Build
 
-Claude Code builds natively. This skill sets what a good build does and the few commands that keep it honest. All `compound-v.py` calls are `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" …` with `--id <id>`.
+Claude Code builds natively. This skill sets who builds, what a good build does, and the few commands that keep it honest. All `compound-v.py` calls are `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" …` with `--id <id>`.
 
 **Commands.** Run each command as one plain command line with literal values (the run id, real paths): no shell variables you set yourself, no `;` or `&&` chains, no `$?`. The sandbox's auto-allow refuses compound commands.
 
@@ -13,19 +13,16 @@ Claude Code builds natively. This skill sets what a good build does and the few 
 
 `compound-v.py run show --id <id>`. The stage must be `build` and the plan must be attached (`test_cmd`, `change_set` are set). If it is not, go back to `compound-v:plan`. Read the plan in full, including `## Constraints`, `## Acceptance` and `## Checklists`.
 
-## 1. One agent, task by task (the default)
+## 1. One builder, task by task (the default)
 
-Work through `## Tasks` in order. For each task:
+Dispatch **one** `compound-v:builder` subagent (foreground) and let it build every task in `## Tasks`. Give it: the run id, the plan path, the spec path and the pre-flight paths, nothing else. It starts from a clean context, so the long build does not drag the whole brainstorm along; in our benchmark that context, re-read on every call, was most of a build's cost. Do not paste the plan into the prompt; it reads it.
 
-1. Write the tests named in the plan **with** the code, not after it:
-   - negative paths: wrong, missing, oversized, replayed and expired input;
-   - state transitions, including the forbidden ones;
-   - persisted state: after an action, read back what was stored (the database, the file, the next page), not just the status code;
-   - missing or placeholder config: the app refuses to start, and no default secret works.
-2. Implement until the task's tests pass, then run the whole `test_cmd`.
-3. Check the task's acceptance rows: each one now has a passing check under the name the plan gave it.
+When it reports:
+1. Run `test_cmd` yourself (terse reporter) and, for web projects, `live_cmd`. Both must pass.
+2. Read its list of unmet rows and out-of-set paths. Fix small gaps yourself; for a large gap, send the same builder a follow-up (SendMessage) rather than redoing its work here.
+3. Read the diff only where the report or a failing check points you. A full re-read here costs as much as the build.
 
-Tasks the `## Task → model` table marks `sonnet` may go to a `general-purpose` subagent with `model: "sonnet"`, one at a time, with the task text and its files. Review its diff before moving on.
+Tasks the `## Task → model` table marks `sonnet` are named as such in the builder's prompt; it may hand them to a `general-purpose` subagent with `model: "sonnet"`.
 
 **Stay inside `change_set`.** When you must write a path outside it, add the glob to the plan's `compound-v-plan` block, say why in the plan, and rerun `compound-v.py run plan --id <id> --plan <path>`. A write outside the set fails the scope check later.
 

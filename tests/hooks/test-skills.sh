@@ -40,7 +40,7 @@ check "init warns about the codex stop-review gate" "$(has skills/init/SKILL.md 
 check "init offers to disable Superpowers"  "$(has skills/init/SKILL.md 'superpowers@claude-plugins-official": false')"
 check "pr-review points at docs/compound-v/specs" "$(has skills/pr-review/SKILL.md docs/compound-v/specs)"
 
-for a in v-memory code-archaeologist doc-validator domain-expert reviewer; do
+for a in v-memory code-archaeologist doc-validator domain-expert reviewer builder; do
   check "agents/$a.md exists" "$([ -f "$REPO/agents/$a.md" ] && echo 1 || echo 0)"
 done
 

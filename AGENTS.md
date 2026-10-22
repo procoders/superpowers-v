@@ -96,7 +96,7 @@ Plus the band mod `hooks/run-band.tsx` (stage, receipts, run cost, quota footer)
 | `schemas/review-findings.schema.json` | Reviewer output shape |
 | `hooks/*.sh`, `hooks/hooks.json`, `hooks/run-band.tsx` | Hook wrappers and the band |
 | `skills/{brainstorm,plan,build,verify,init,onboard,pr-review}/` | The prose |
-| `agents/{v-memory,code-archaeologist,doc-validator,domain-expert,reviewer}.md` | Subagents |
+| `agents/{v-memory,code-archaeologist,doc-validator,domain-expert,builder,reviewer}.md` | Subagents |
 | `tests/core/`, `tests/hooks/` | Tests |
 
 ## Agents and model policy
