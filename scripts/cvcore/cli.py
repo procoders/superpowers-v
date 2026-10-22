@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import run, snapshot
+from . import escalate, run, scope, snapshot
 from .gitio import GitError, repo_root
 
 
@@ -50,6 +50,24 @@ def cmd_run(a, repo):
     _out(rec)
 
 
+def cmd_scope(a, repo):
+    rec = None if a.base and a.allow else _pick(repo, a)
+    allow = a.allow or list(rec["change_set"]) + [g for gs in rec["lanes"].values() for g in gs]
+    res = scope.check(repo, a.base or rec["base_commit"], allow)
+    _out(res)
+    return 0 if res["verdict"] == "pass" else 1
+
+
+def cmd_escalate(a, repo):
+    _out(escalate.classify_diff(repo, a.base or _pick(repo, a)["base_commit"]))
+
+
+def cmd_classify_request(a, repo):
+    src = sys.stdin if a.text_file in (None, "-") else open(a.text_file, encoding="utf-8")
+    with src:
+        _out({"tier": escalate.classify_request(src.read())})
+
+
 def parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--repo", default=".")
@@ -75,6 +93,16 @@ def parser() -> argparse.ArgumentParser:
     r.add_parser("bind", parents=[withid]).add_argument("--session", required=True)
     for name in ("start", "stage", "plan", "show", "bind"):
         r.choices[name].set_defaults(fn=cmd_run)
+    sc = sub.add_parser("scope", parents=[withid])
+    sc.add_argument("--base")
+    sc.add_argument("--allow", action="append", default=[])
+    sc.set_defaults(fn=cmd_scope)
+    es = sub.add_parser("escalate", parents=[withid])
+    es.add_argument("--base")
+    es.set_defaults(fn=cmd_escalate)
+    cr = sub.add_parser("classify-request", parents=[common])
+    cr.add_argument("--text-file")
+    cr.set_defaults(fn=cmd_classify_request)
     return p
 
 
