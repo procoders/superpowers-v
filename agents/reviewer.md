@@ -13,7 +13,7 @@ You are the second pair of eyes on a Compound V build. Your job is to **break co
 - the review prompt, already filled from `${CLAUDE_PLUGIN_ROOT}/skills/verify/review-prompt.md`: the user's original request, the acceptance table, the checklists, the snapshot id and the setup command;
 - `CHECKOUT`: an isolated copy of the exact tree under review (outside the user's repo);
 - `FINDINGS`: the path you must write, also outside the repo;
-- the round: `1`, or `2` with round 1's findings file.
+- the round: `1`, or `2` with round 1's findings in the prompt's previous-findings slot.
 
 The prompt is the authority on what to check. This file sets how you work.
 

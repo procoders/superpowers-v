@@ -35,6 +35,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" receipt scope --id <id>
 Each one prints its receipt: `result` is `pass`, `fail` or `error`, followed by the command's exit code and the last lines of its output.
 - **fail**: fix the cause (§3), then run all the steps again. A fix changes the tree, so the earlier receipts are stale.
 - **scope fail**: a file outside `change_set` (or outside its lane) changed. Revert it, or, when it belongs to the work, add its glob in the plan block and rerun `run plan`. Never hide a write.
+- **error, "gitignore what it writes"**: the command left a non-ignored file behind (a report, a test database, coverage). Add it to `.gitignore`, delete the stray output, and rerun the steps.
 - **tests fail with `tests removed`**: a test that existed when the plan was attached is gone. Restore it.
 - **live error, browser cannot run** (no browser binary, no display, sandbox): ask the user once whether to waive the browser check, saying what will not have been checked. Only on their yes: `compound-v.py waive live --id <id> --reason "<their words>"`. A failing browser test is a failure, never a reason to waive.
 
@@ -56,9 +57,10 @@ Fill `${CLAUDE_PLUGIN_ROOT}/skills/verify/review-prompt.md`:
 - `{acceptance}`: the plan's `## Acceptance` table (`none: light run` without a plan);
 - `{checklists}`: `${CLAUDE_PLUGIN_ROOT}/skills/plan/checklists.md` together with the plan's `## Checklists` answers;
 - `{snapshot}`: the `tree` that `checkout` printed;
-- `{setup_cmd}`: the plan's `setup_cmd`, or `none`.
+- `{setup_cmd}`: the plan's `setup_cmd`, or `none`;
+- `{previous}`: for round 2, the round-1 findings from `docs/compound-v/runs/<id>-review-1.json`; for round 1, `none`.
 
-Dispatch the `compound-v:reviewer` agent with the filled prompt, `CHECKOUT=$D/tree`, `FINDINGS=$D/findings.json`, and the round (for round 2, also round 1's findings file under `docs/compound-v/runs/`). The findings file must stay outside the repo: inside it, the file would change the tree and stale the review. Then:
+Dispatch the `compound-v:reviewer` agent with the filled prompt, `CHECKOUT=$D/tree`, `FINDINGS=$D/findings.json`, and the round. The findings file must stay outside the repo: inside it, the file would change the tree and stale the review. `review record` copies it into `docs/compound-v/runs/` itself. Then:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" review record --id <id> --findings "$D/findings.json" --reviewer claude

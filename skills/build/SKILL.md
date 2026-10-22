@@ -42,7 +42,7 @@ Then dispatch one native subagent per lane task, **in one message**, each with `
 - to write **only** inside its lane's globs, listed verbatim;
 - to run `test_cmd`, commit all its work, and end its report with the output of `git rev-parse --abbrev-ref HEAD`.
 
-When a lane reports back, merge it through the gate:
+Native worktrees live under `.claude/worktrees/`, which the snapshot and the scope check ignore. When a lane reports back, merge it through the gate:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" lane finish --id <id> --task <task> --branch <branch from the report>
@@ -61,6 +61,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" status --id <id>
 ## 4. Hand off
 
 When every task is done, or the budget stopped you:
+- run `test_cmd` and `live_cmd`, then `git status --porcelain`. Anything new that the commands wrote (reports, test databases, coverage, caches) goes into `.gitignore` now. Otherwise the verify step records `error` for changing the tree it checks;
 - make sure the operator guide exists;
 - list any acceptance row that is unmet or untested, with the reason;
 - `compound-v.py run stage --id <id> --to verify`, then invoke `compound-v:verify`.
