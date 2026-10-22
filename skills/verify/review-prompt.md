@@ -35,6 +35,13 @@ Round 1. Before you open the app, derive the concrete cases for each probe from 
 then write them into one or two probe scripts (curl, a small script, or a Playwright test) and run
 those, instead of one command per case. Budget: at most 20 turns. Run them in this order:
 
+0. Completeness, by reading only (at most 2 turns, before anything runs): list every requirement in
+   the request above and in the owner's decisions and your-calls of the spec
+   (`docs/compound-v/specs/` in this checkout), and map each to an acceptance row and to the test or
+   probe that checks it. A requirement with no row, or a row with no check, is a finding: `high`
+   when the request or an owner decision states it, `medium` for a builder's own call. Fold the
+   unchecked ones into the probe scripts below.
+
 1. Every time or number rule at −1 s / exact / +1 s, in the business's own timezone and in the
    request's own unit ("2 hours" = 7200 s, "2 days" = 48 h).
 2. Each "same rules as X" clause, rule by rule: list every check X's code enforces (caps, closures,
