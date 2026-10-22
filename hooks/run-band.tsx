@@ -3,7 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Band, Hud, Quota, StepMark } from '../types'
 
-const band = atom({ plugin: 'superpowers-v', key: 'band' } as const, null)
+const band = atom({ plugin: 'compound-v', key: 'band' } as const, null)
 
 const TICK_MS = 5_000
 const IDLE_MS = 30_000

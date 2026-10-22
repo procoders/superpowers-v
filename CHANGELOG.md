@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [4.0.0] — unreleased
+
+See README; full notes in Task 12.
+
 ## [3.9.1] - 2026-10-21
 
 ### Changed — the two largest scripts are packages now (no behaviour change)
@@ -1086,7 +1090,7 @@ ref — which wrote one false finding before it was caught); the skill docs were
 Four independent inventories (54 promises in README/AGENTS/plugin.json; 18 commands, 7 agents, 9 hooks;
 47 scripts and their callers; 24 skill documents, 7 adapters and the 2026-09-02 cut list) plus three
 hand checks. Report with the maintainer's decision list:
-[`docs/superpowers/architecture/2026-09-04-promise-vs-mechanism-audit.md`](docs/superpowers/architecture/2026-09-04-promise-vs-mechanism-audit.md).
+[`docs/superpowers/architecture/2026-09-04-promise-vs-mechanism-audit.md`](docs/archive/v3/architecture/2026-09-04-promise-vs-mechanism-audit.md).
 Headline facts, stated plainly: 0 of 101 Engine C results carry a `usage` object (per-ticket usage is
 dead on Engine C); Context7 was not attached in 12 of the last 16 pre-flight library audits (Workflow
 agents do not inherit MCP tools); `/v:preferences` has no store after three months; Devin/opencode were
@@ -1369,7 +1373,7 @@ Three consecutive `529 Overloaded` on the Opus reviewer during a live run each c
 bookkeeping commit and a human relaunch: the emitted Workflow JS never looped `agent()`, so a
 transient failure (or, on the path the runtime actually takes, `agent()` resolving to `null`
 with no error text) became `status: error` on the first hit, even though
-[`failure-policy.md`](skills/compound-v/failure-policy.md) already owned the right
+`failure-policy.md` already owned the right
 classify-then-decide table for the residual subagent dispatcher and the external workers. Every
 `agent()` call the emitted script makes (implement, gate, record, finalize, review) is now
 wrapped in `withRetry`, which retries any failed call — a `null` resolution or a throw, unclassified, since the script sees no error text — up to a new manifest
@@ -1820,7 +1824,7 @@ The fifth review record reproduced the anti-ruflo grep pattern literally and tri
 
 ## [3.4.0] - 2026-09-02
 
-Native-first: the cut list from [`2026-09-02-viability-audit.md`](docs/superpowers/architecture/2026-09-02-viability-audit.md) §7, decided by the maintainer through four structured questions and shipped through [`docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md`](docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md). The constraint: the functionality stays, but leans as far as possible on Claude Code's own mechanisms.
+Native-first: the cut list from [`2026-09-02-viability-audit.md`](docs/archive/v3/architecture/2026-09-02-viability-audit.md) §7, decided by the maintainer through four structured questions and shipped through [`docs/superpowers/specs/2026-09-02-v3.4-native-first-design.md`](docs/archive/v3/specs/2026-09-02-v3.4-native-first-design.md). The constraint: the functionality stays, but leans as far as possible on Claude Code's own mechanisms.
 
 ### Removed — three schedulers and a goal engine, for `/goal` + `/loop` + `/schedule`
 
@@ -1975,7 +1979,7 @@ Pinned by tests: `tests/test-integration-gate.sh` and `tests/test-engine-c-contr
 
 ## [3.3.7] - 2026-09-02
 
-A viability audit, asked for by the maintainer in one sentence: *check what is redundant, duplicates Claude Code, or is over-engineered; whether agents are routed by task complexity correctly; whether the task tier and the short-vs-full flow are decided correctly; and what is declared but is in fact a stub.* The answer is [`docs/superpowers/architecture/2026-09-02-viability-audit.md`](docs/superpowers/architecture/2026-09-02-viability-audit.md). This release ships the fixes that needed no decision; the cut list in that document does.
+A viability audit, asked for by the maintainer in one sentence: *check what is redundant, duplicates Claude Code, or is over-engineered; whether agents are routed by task complexity correctly; whether the task tier and the short-vs-full flow are decided correctly; and what is declared but is in fact a stub.* The answer is [`docs/superpowers/architecture/2026-09-02-viability-audit.md`](docs/archive/v3/architecture/2026-09-02-viability-audit.md). This release ships the fixes that needed no decision; the cut list in that document does.
 
 ### The numbers the audit is built on
 
@@ -2579,7 +2583,7 @@ Engine C now requires `engine_c: true` in `.claude/compound-v.json`. The residua
 
 Compound V stops being an orchestrator. Claude Code grew a native orchestration runtime and a full set of enforcement points; this release hands execution to them and keeps the parts that have no native equivalent: **triage, disjoint file lanes, the git-derived verdict, cross-session recovery and the cross-vendor arbiter.**
 
-The audit that drove it is committed at [`docs/superpowers/architecture/native-mechanisms.md`](docs/superpowers/architecture/native-mechanisms.md) — 23 guarantees matched against the mechanism that could provide them. Of those, **11 had a native mechanism that covers the need and which we were not using**: five decided in 1.0 and never built, three we did not know existed, one never looked at, one deleted on a false premise, one rendered by hand. All eleven are used now.
+The audit that drove it is committed at [`docs/superpowers/architecture/native-mechanisms.md`](docs/archive/v3/architecture/native-mechanisms.md) — 23 guarantees matched against the mechanism that could provide them. Of those, **11 had a native mechanism that covers the need and which we were not using**: five decided in 1.0 and never built, three we did not know existed, one never looked at, one deleted on a false premise, one rendered by hand. All eleven are used now.
 
 **Requires Claude Code ≥ 2.1.219.**
 
@@ -2593,7 +2597,7 @@ A narrow auto-commit class gated on nine mechanically checkable predicates, incl
 
 `test_contract` and per-job `test_scope` in the manifest, transported to workers as a real argument rather than prose in a prompt. The floor is impacted ∪ previously-failing ∪ newly-added; an unmapped path resolves to the full suite, never to nothing.
 
-**Stated plainly, because it is the point:** the floor is early feedback. It does **not** restore what the full suite guaranteed — CI does, and CI always runs. Call-graph-derived test selection is measured at 0.2%–10.6% unsafe per revision, and a hand-written glob map carries strictly less information than a call graph, so 0.2% is an optimistic floor rather than an expectation. This reverses a decision made in 2.17; the reasoning is recorded in [ADR 0003](docs/superpowers/adr/0003-scoped-tests-with-a-floor.md).
+**Stated plainly, because it is the point:** the floor is early feedback. It does **not** restore what the full suite guaranteed — CI does, and CI always runs. Call-graph-derived test selection is measured at 0.2%–10.6% unsafe per revision, and a hand-written glob map carries strictly less information than a call graph, so 0.2% is an optimistic floor rather than an expectation. This reverses a decision made in 2.17; the reasoning is recorded in [ADR 0003](docs/archive/v3/adr/0003-scoped-tests-with-a-floor.md).
 
 ### Added — lane enforcement before the write
 
@@ -2657,7 +2661,7 @@ Two approaches internalized from a critical read of the [`repowise`](https://git
 - **Packing runs AFTER redaction, and that ordering is the security property.** `redact_uncapped()` is extracted from `compound-v-epic-arbiter.py` with both fail-closed rules intact (unclosed PEM/PGP block, unclosed quoted labelled secret), and the evidence path is redact → fail-closed → pack, on already-sanitized text. Packing only deletes WHOLE lines, so it can never un-redact. Packing first would be a real egress hole, not a style preference: dropping a key's `BEGIN`/`END` or a `password=` label line destroys the multi-line structure redaction matches on, and a short secret would then also evade the opaque-token regex. Omission markers are path-free by construction and `section_label` is a closed enum.
 - **An over-budget prompt SKIPS the poll** with a bounded diagnostic rather than silently truncating it. A missing ballot is honest; a quietly-shortened prompt changes what a judge votes on.
 
-**ADR 0002 — any published number ships with its limits in the same document** ([`docs/superpowers/adr/0002-limits-ship-with-the-claim.md`](docs/superpowers/adr/0002-limits-ship-with-the-claim.md)). The anti-ruflo CI gate catches *fabricated* numbers; it cannot catch a number that is entirely real and still misleads because the reader can't see what it was measured on. Every published figure now carries a "What this does not show" note next to the claim. Five alternatives declined, including `CONVENTIONS.md` (generated — `/v:onboard --refresh` would silently erase the rule) and a CI grep (a regex cannot separate a claim from a version string, and widening the anti-ruflo gate would false-positive itself into being disabled — the v2.14.1 lesson). The ADR applies the rule to itself and states plainly that it creates no hard gate.
+**ADR 0002 — any published number ships with its limits in the same document** ([`docs/superpowers/adr/0002-limits-ship-with-the-claim.md`](docs/archive/v3/adr/0002-limits-ship-with-the-claim.md)). The anti-ruflo CI gate catches *fabricated* numbers; it cannot catch a number that is entirely real and still misleads because the reader can't see what it was measured on. Every published figure now carries a "What this does not show" note next to the claim. Five alternatives declined, including `CONVENTIONS.md` (generated — `/v:onboard --refresh` would silently erase the rule) and a CI grep (a regex cannot separate a claim from a version string, and widening the anti-ruflo gate would false-positive itself into being disabled — the v2.14.1 lesson). The ADR applies the rule to itself and states plainly that it creates no hard gate.
 
 ### Verification
 

@@ -72,7 +72,7 @@ class Base(unittest.TestCase):
         if checkout:
             receipts.note_checkout(self.repo, self.reload(), tid, self.tmp / "co")
         if stop:
-            receipts.note_reviewer_stop(self.repo, self.reload(), "a1", "superpowers-v:reviewer")
+            receipts.note_reviewer_stop(self.repo, self.reload(), "a1", "compound-v:reviewer")
         path = self.tmp / "findings.json"
         path.write_text(json.dumps({"snapshot": snap or tid, "summary": "s",
                                     "findings": findings}))

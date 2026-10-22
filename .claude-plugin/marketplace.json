@@ -7,13 +7,17 @@
   },
   "plugins": [
     {
+      "name": "compound-v",
+      "description": "A verified development cycle: brainstorm, conditional pre-flights, plan, native build, then verification with tree-bound receipts that the model cannot write for itself.",
+      "source": "./"
+    },
+    {
       "name": "superpowers-v",
-      "description": "Compound V for Superpowers: triple parallel pre-flight (code archaeology + domain-expert + Context7 library validator), disjoint partitioning, manifest-driven multi-backend dispatch (Claude + Codex + Antigravity + Cursor), git-diff scope enforcement, crash-resumable runs, adaptive tier-based routing, epic mode, research-grounded brainstorming (gated pre-brainstorm recon + batched elicitation), V-memory local-first semantic+lexical recall over docs/superpowers (opt-in pure-python embeddings + a deterministic recall→action bridge), and batched parallel dispatch (Opus default, narrow Sonnet exception)",
-      "version": "3.9.1",
-      "source": "./",
-      "author": {
-        "name": "Oleg",
-        "email": "copeus@gmail.com"
+      "description": "Compound V 3.x (legacy orchestrator), kept on the v3 branch for existing users.",
+      "source": {
+        "source": "github",
+        "repo": "procoders/superpowers-v",
+        "ref": "v3"
       }
     }
   ]

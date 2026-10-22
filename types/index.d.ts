@@ -24,6 +24,6 @@ export type Band = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'superpowers-v': { band: Band | null }
+    'compound-v': { band: Band | null }
   }
 }

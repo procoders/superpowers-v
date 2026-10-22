@@ -7,7 +7,7 @@ if ! command -v claude >/dev/null 2>&1; then
 fi
 fails=0
 out="$(claude plugin validate . 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'run-band.tsx state writes: superpowers-v.band'; then
+if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'run-band.tsx state writes: compound-v.band'; then
   echo "ok   plugin validate accepts the band and its state contract"
 else
   echo "FAIL plugin validate (rc=$rc)"; printf '%s\n' "$out" | tail -15; fails=$((fails + 1))

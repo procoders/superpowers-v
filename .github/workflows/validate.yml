@@ -13,8 +13,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install jq
-        run: sudo apt-get install -y jq
+      - name: Install jq and shellcheck
+        run: sudo apt-get install -y jq shellcheck
 
       - name: Validate plugin.json is valid JSON
         run: jq empty .claude-plugin/plugin.json
@@ -25,8 +25,8 @@ jobs:
       - name: Validate hooks.json is valid JSON
         run: jq empty hooks/hooks.json
 
-      - name: Validate job_result.schema.json is valid JSON
-        run: jq empty schemas/job_result.schema.json
+      - name: Validate review-findings.schema.json is valid JSON
+        run: jq empty schemas/review-findings.schema.json
 
       - name: Verify required plugin.json fields
         run: |
@@ -44,8 +44,14 @@ jobs:
         run: |
           set -e
           pv=$(jq -r '.version' .claude-plugin/plugin.json)
-          mv=$(jq -r '.plugins[] | select(.name=="superpowers-v") | .version' .claude-plugin/marketplace.json)
-          if [ "$pv" != "$mv" ]; then
+          pn=$(jq -r '.name' .claude-plugin/plugin.json)
+          # The marketplace entry for this plugin may carry no version (the plugin.json
+          # is then the single source); when it does, the two must agree.
+          mv=$(jq -r '[.plugins[] | select(.name=="compound-v") | .version // empty] | first // empty' .claude-plugin/marketplace.json)
+          [ "$pn" = "compound-v" ] || { echo "❌ plugin.json name is '$pn', expected compound-v"; exit 1; }
+          jq -e '[.plugins[] | select(.name=="compound-v")] | length == 1' .claude-plugin/marketplace.json >/dev/null \
+            || { echo "❌ marketplace.json must carry exactly one compound-v entry"; exit 1; }
+          if [ -n "$mv" ] && [ "$pv" != "$mv" ]; then
             echo "❌ version mismatch: plugin.json=$pv marketplace.json=$mv"
             exit 1
           fi
@@ -85,13 +91,14 @@ jobs:
           set -e
           for agent in agents/*.md; do
             echo "Checking $agent..."
-            # Frontmatter must have name and description
             head -20 "$agent" | grep -q "^name:" || { echo "❌ $agent missing 'name' in frontmatter"; exit 1; }
             head -20 "$agent" | grep -q "^description:" || { echo "❌ $agent missing 'description' in frontmatter"; exit 1; }
-            # Per project policy: no Haiku
+            # Per project policy: no Haiku, except the read-only v-memory agent
             if head -20 "$agent" | grep -qi "^model:.*haiku"; then
-              echo "❌ $agent specifies Haiku — project policy forbids Haiku"
-              exit 1
+              if [ "$(basename "$agent")" != "v-memory.md" ]; then
+                echo "❌ $agent specifies Haiku — only agents/v-memory.md may"
+                exit 1
+              fi
             fi
             echo "✅ $agent OK"
           done
@@ -106,7 +113,7 @@ jobs:
             echo "✅ $skill OK"
           done
 
-      - name: Set up Python for linters and validators
+      - name: Set up Python for linters
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -117,104 +124,28 @@ jobs:
       - name: Run frontmatter linter (description length, missing fields, no-Haiku policy)
         run: python3 scripts/lint-frontmatter.py .
 
-      - name: Validate every manifest against the invariant gate
-        run: |
-          set -e
-          # The deterministic manifest validator is the partition gate. A missing
-          # validator is a HARD failure (a rename must never silently drop the gate).
-          test -f scripts/compound-v-validate-manifest.py || { echo "❌ scripts/compound-v-validate-manifest.py is missing — the partition gate would silently vanish"; exit 1; }
-          for pkg in cv_validate cv_emit; do
-            test -f "scripts/$pkg/__init__.py" || { echo "❌ scripts/$pkg/ is missing — its entry point cannot load"; exit 1; }
-          done
-          python3 scripts/compound-v-validate-manifest.py examples/manifest.example.yaml
-          echo "✅ example manifest passes the invariant gate"
-          # Also validate every tracked run-manifest — exercise the gate on real data,
-          # not just one curated fixture.
-          for m in docs/superpowers/execution/*/manifest.yaml; do
-            [ -f "$m" ] || continue
-            python3 scripts/compound-v-validate-manifest.py "$m"
-            echo "✅ $m passes the invariant gate"
-          done
-
-      - name: Every run dir has a committed state.json (audit-trail gate)
-        run: |
-          set -e
-          # /v:orchestrate writes state.json (step 6) and commits it (step 8) -- both
-          # are PROSE instructions in a markdown file, so an agent can satisfy neither
-          # and nothing notices. Four runs between 2026-07-13 and 2026-07-25 shipped a
-          # manifest with no state: /v:status reports "NO STATE" for them, and the
-          # SessionStart resume banner (which reads state.json to tell a just-compacted
-          # agent where it was) is blind to them. Their state is genuinely lost, so they
-          # are allowlisted by id -- never back-filled, because a reconstructed audit
-          # trail is the fabricated-evidence pattern, not a repair.
-          # 2026-07-26-v2.18-autonomy joined them when that branch merged into v3.0:
-          # this gate caught it on the merge, which is the gate working as designed.
-          # Its state was never written either, so it is listed, not reconstructed.
-          ALLOW="2026-07-13-usage-and-advisor 2026-07-14-v2.14-blockers-and-headless 2026-07-15-v2.16-decision-preferences 2026-07-25-v2.17-cochange 2026-07-26-v2.18-autonomy"
-          rc=0
-          for m in $(git ls-files 'docs/superpowers/execution/*/manifest.yaml'); do
-            d=$(dirname "$m"); id=$(basename "$d")
-            case " $ALLOW " in *" $id "*) continue ;; esac
-            git ls-files --error-unmatch "$d/state.json" >/dev/null 2>&1 || {
-              echo "❌ $d has a committed manifest.yaml but no committed state.json"; rc=1; }
-          done
-          [ "$rc" = 0 ] || { echo "A run with no committed state.json is invisible to /v:status and to the resume banner. Commit it (/v:orchestrate step 8)."; exit 1; }
-          echo "✅ every non-allowlisted run dir carries a committed state.json"
-
-      - name: Validate example job_result against the schema
-        run: |
-          set -e
-          # Prefer the project's own collector validator when present; otherwise fall
-          # back to a stdlib jsonschema-style check via a tiny inline Python guard.
-          python3 - <<'PY'
-          import json, sys
-          schema = json.load(open("schemas/job_result.schema.json"))
-          inst = json.load(open("examples/job_result.example.json"))
-          req = schema.get("required", [])
-          props = schema.get("properties", {})
-          missing = [k for k in req if k not in inst]
-          if missing:
-              print("❌ example job_result missing required keys:", missing); sys.exit(1)
-          if schema.get("additionalProperties") is False:
-              extra = [k for k in inst if k not in props]
-              if extra:
-                  print("❌ example job_result has keys not in schema:", extra); sys.exit(1)
-          enum = props.get("status", {}).get("enum")
-          if enum and inst.get("status") not in enum:
-              print("❌ status not in enum:", inst.get("status")); sys.exit(1)
-          print("✅ example job_result conforms to job_result.schema.json")
-          PY
-
       - name: No fabricated cost/token metrics (anti-ruflo gate)
         run: |
           set -e
-          # The anti-ruflo charter forbids printing token-cost numbers we cannot measure.
-          # Guard scripts/ and docs/ for fabricated metric output. We match phrases that
-          # would only appear if code/docs CLAIMED measured savings (e.g. "tokens saved",
-          # "cost savings: N", a hardcoded "baseline = 1000"). Pure mentions of the
+          # Never print token-cost numbers we cannot measure. We match phrases that would
+          # only appear if code/docs CLAIMED measured savings. Pure mentions of the
           # anti-pattern (the word "anti-ruflo", "fabricated", "do not print") are allowed.
           fail=0
           patterns='tokens? saved|token-cost (saved|savings)|cost savings:|saved [0-9]+ tokens|baseline ?= ?1000|\$[0-9]+\.[0-9]+ saved'
           while IFS= read -r -d '' f; do
-            # Skip this workflow file itself (it names the patterns) and the PRD/plan,
-            # which discuss the anti-pattern by name.
             case "$f" in
-              # preflight/ joined this list in 3.0. The domain audit's own MUST NOT
-              # rules name the very pattern this gate detects ("any claimed savings
-              # ... MUST NOT be printed as a measurement"), so the document that
-              # FORBIDS the anti-pattern was failing the guard against it. Same
-              # category as specs/ and plans/: prose that discusses the anti-pattern
-              # by name, never code that emits one.
-              *docs/superpowers/specs/*|*docs/superpowers/plans/*|*docs/superpowers/preflight/*) continue ;;
+              # Archived v3 docs and the v4 design documents discuss the anti-pattern by
+              # name (their MUST NOT rules quote it); they never emit one.
+              ./docs/archive/*|./docs/compound-v/specs/*|./docs/compound-v/plans/*|./docs/compound-v/preflight/*|./docs/v4/*) continue ;;
             esac
             if grep -inE "$patterns" "$f" >/dev/null 2>&1; then
               echo "❌ possible fabricated cost/token metric in $f:"
               grep -inE "$patterns" "$f"
               fail=1
             fi
-          done < <(find scripts docs -type f \( -name "*.sh" -o -name "*.py" -o -name "*.md" \) -print0 2>/dev/null)
+          done < <(find ./scripts ./skills ./hooks ./docs -type f \( -name "*.sh" -o -name "*.py" -o -name "*.md" -o -name "*.tsx" \) -print0 2>/dev/null)
           [ "$fail" = "0" ] || exit 1
-          echo "✅ no fabricated cost/token metrics in scripts/ or docs/"
+          echo "✅ no fabricated cost/token metrics in scripts/, skills/, hooks/ or docs/"
 
       - name: Verify hook scripts are executable
         run: |
@@ -228,9 +159,25 @@ jobs:
           done
 
       - name: Lint hook scripts with shellcheck
+        run: shellcheck hooks/*.sh
+
+      - name: Size guard (new core <= 2500 lines)
         run: |
-          sudo apt-get install -y shellcheck
-          shellcheck hooks/*.sh scripts/compound-v-*.sh
+          set -e
+          n=$(cat scripts/compound-v.py scripts/cvcore/*.py hooks/*.sh hooks/run-band.tsx | wc -l | tr -d ' ')
+          echo "core size: $n lines (limit 2500)"
+          [ "$n" -le 2500 ] || { echo "❌ core is $n lines, over the 2500-line budget"; exit 1; }
+
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests/core -v
+
+      - name: Hook and skill tests
+        run: |
+          set -e
+          for t in tests/hooks/*.sh; do
+            echo "── bash $t"
+            LANG=C bash "$t"
+          done
 
       # FINAL step — run the repo-wide dead-link scan only after every file exists,
       # so cross-refs to files authored by later batches resolve at integration time.
@@ -268,7 +215,7 @@ jobs:
                 echo x >> "$deadfile"
               fi
             done
-          done < <(find . -name "*.md" -not -path "./node_modules/*" -not -path "./.git/*" -not -path "./docs/superpowers/execution/*/jobs/*" -print0)
+          done < <(find . -name "*.md" -not -path "./node_modules/*" -not -path "./.git/*" -not -path "./docs/archive/*" -not -path "./.claude/worktrees/*" -print0)
           if [ -s "$deadfile" ]; then
             n=$(wc -l < "$deadfile" | tr -d ' '); rm -f "$deadfile"
             echo "❌ $n dead intra-plugin link(s) — see above"; exit 1
@@ -276,65 +223,9 @@ jobs:
           rm -f "$deadfile"
           echo "✅ All intra-plugin links resolve"
 
-      # Marathon-mode (v2.10) selftests run under Python 3.9 — the documented floor for
-      # scripts/compound-v-epic-state.py and scripts/compound-v-epic-arbiter.py (both pure
-      # stdlib, no PyYAML dependency). Installed LAST in the job so re-pointing PATH at a
-      # 3.9 interpreter can never affect the earlier PyYAML-dependent steps above.
-      - name: Set up Python 3.9 (marathon selftest floor)
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.9'
-
-      - name: Run epic-state.py selftest (Python 3.9 floor)
-        run: python3 scripts/compound-v-epic-state.py --selftest
-
-      - name: Run epic-arbiter.py selftest (Python 3.9 floor)
-        run: python3 scripts/compound-v-epic-arbiter.py --selftest
-
-      # The two steps above run the epic-critical pair under a CLEAN 3.9 (no
-      # third-party deps) to prove they stay pure-stdlib. This step then covers EVERY other
-      # script that ships a --selftest, so a regression anywhere in the routing / scope-gate /
-      # model-resolution / usage / memory / collector surface is caught (previously only the
-      # pair was defended). Discovery is dynamic — a new script with a --selftest is picked
-      # up automatically. pyyaml + jsonschema are the only third-party deps any selftest needs
-      # (the memory dense-lane degrades to FTS5-only without its out-of-repo venv).
-      - name: Run ALL script selftests (Python 3.9 floor)
-        run: |
-          set -e
-          python3 -m pip install --quiet pyyaml jsonschema
-          rc=0
-          for s in scripts/*.py; do
-            if grep -q -- '--selftest' "$s"; then
-              echo "── $s --selftest"
-              if ! LANG=C python3 "$s" --selftest; then
-                echo "❌ SELFTEST FAILED: $s"; rc=1
-              fi
-            fi
-          done
-          [ "$rc" = "0" ] || { echo "❌ one or more selftests failed"; exit 1; }
-          echo "✅ all script selftests pass under Python 3.9"
-
-      # The selftest sweep above globs scripts/*.py ONLY. Everything under tests/ is
-      # executed by the separate `tests` job below, which always runs.
-
-  # ---------------------------------------------------------------------------
-  # The full-suite backstop (v3.0, Feature B5).
-  #
-  # This is a JOB, not a step guarded by `if:` — and the workflow carries no `paths:`
-  # filter. GitHub reports a conditionally-skipped job as `Success`, so a path filter
-  # or an `if:` on a REQUIRED check turns it green without executing anything. The job
-  # therefore always runs and dispatches internally: it decides what to execute, the
-  # workflow never decides whether to execute it.
-  #
-  # It also fixes a second, older hole. Until 3.0 the only sweep was `scripts/*.py`
-  # plus ONE hardcoded `bash tests/test-epic-goal-stop.sh`, so three of the four files
-  # under tests/ had never run in CI at all — including tests/v2.9-e2e/*.py, which a
-  # flat `tests/*.sh` glob would still miss. The discovery below is RECURSIVE and
-  # covers both extensions, and it fails when it discovers nothing: a guard that
-  # silently matches zero files is the v2.14.1 false-green all over again.
-  # ---------------------------------------------------------------------------
-  tests:
-    name: Full test suite (tests/, always runs)
+  # The core is stdlib-only with a Python 3.9 floor; run the unit tests there too.
+  tests-py39:
+    name: Unit tests (Python 3.9 floor)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -342,36 +233,10 @@ jobs:
       - name: Install jq
         run: sudo apt-get install -y jq
 
-      # Python 3.9 is the documented floor for the scripts these tests drive.
-      - name: Set up Python 3.9 (test floor)
+      - name: Set up Python 3.9
         uses: actions/setup-python@v5
         with:
           python-version: '3.9'
 
-      - name: Install test dependencies
-        run: python3 -m pip install --quiet pyyaml jsonschema
-
-      - name: Run every test under tests/ (recursive, .sh and .py)
-        run: |
-          # No `set -e`: every test runs and every failure is reported, rather than
-          # stopping at the first. PYTHONDONTWRITEBYTECODE keeps a local run of this
-          # same sweep from leaving scripts/__pycache__/*.pyc behind — untracked files
-          # the scope gate unions into a job's changed set, which would BLOCK the job
-          # that ran its own tests.
-          set -uo pipefail
-          rc=0
-          found=0
-          while IFS= read -r t; do
-            found=$((found + 1))
-            case "$t" in
-              *.sh) echo "── bash $t";    LANG=C bash "$t"    || { echo "❌ TEST FAILED: $t"; rc=1; } ;;
-              *.py) echo "── python3 $t"; LANG=C PYTHONDONTWRITEBYTECODE=1 python3 "$t" || { echo "❌ TEST FAILED: $t"; rc=1; } ;;
-            esac
-          done < <(find tests -type f \( -name '*.sh' -o -name '*.py' \) -print0 \
-                     | LC_ALL=C sort -z | tr '\0' '\n')
-          if [ "$found" = "0" ]; then
-            echo "❌ no test files discovered under tests/ — the discovery glob is dead, which is exactly how 25 of 29 selftests silently stopped running in v2.14"
-            exit 1
-          fi
-          [ "$rc" = "0" ] || { echo "❌ $found test file(s) swept; one or more failed"; exit 1; }
-          echo "✅ all $found test file(s) under tests/ pass"
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests/core -v

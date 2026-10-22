@@ -48,10 +48,8 @@ check "lint-frontmatter selftest passes" \
 check "lint-frontmatter passes on the plugin" \
   "$(cd "$REPO" && python3 scripts/lint-frontmatter.py . >/dev/null 2>&1 && echo 1 || echo 0)"
 
-# Only the read-only v-memory agent may name Haiku. skills/compound-v and
-# skills/backend-launcher are v3 doctrine that Task 11 deletes; they are excluded
-# until then, and this exclusion goes with them.
-haiku="$(cd "$REPO" && grep -ril haiku agents skills --exclude-dir=compound-v --exclude-dir=backend-launcher | sort | tr '\n' ' ')"
+# Only the read-only v-memory agent may name Haiku.
+haiku="$(cd "$REPO" && grep -ril haiku agents skills | sort | tr '\n' ' ')"
 check "only agents/v-memory.md names haiku (found: ${haiku:-none})" \
   "$([ "$haiku" = "agents/v-memory.md " ] && echo 1 || echo 0)"
 

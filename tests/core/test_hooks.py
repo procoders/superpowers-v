@@ -188,11 +188,11 @@ class HooksTest(unittest.TestCase):
 
     def test_subagent_stop_records_reviewer(self):
         rec = self.start()
-        for kind in ("Explore", "superpowers-v:spec-reviewer", "superpowers-v:reviewer"):
+        for kind in ("Explore", "compound-v:spec-reviewer", "compound-v:reviewer"):
             hooks.subagent_stop_hook({"hook_event_name": "SubagentStop", "session_id": "s1",
                                       "agent_id": "a-" + kind, "agent_type": kind}, self.repo)
         stops = self.load(rec)["reviewer_stops"]
-        self.assertEqual(["superpowers-v:reviewer"], [s["agent_type"] for s in stops])
+        self.assertEqual(["compound-v:reviewer"], [s["agent_type"] for s in stops])
 
     def test_guard_denies_run_record_edit(self):
         for tool, key in (("Write", "file_path"), ("Edit", "file_path"),

@@ -20,7 +20,7 @@ against Claude Code's plugin spec + this project's conventions:
   - `model: opus` REQUIRED on `agents/*.md` (A5), except the Sonnet pre-flight agents
     (code-archaeologist, doc-validator, domain-expert) and v-memory
   - `memory`, when present, is exactly `user` | `project` | `local` (3.5.0), and is
-    REQUIRED ABSENT on every v4 agent (v3 reviewers exempt until Task 11)
+    REQUIRED ABSENT on every agent
   - Closing `---` at EOF without a trailing newline is accepted (A6)
   - Common YAML pitfalls (unquoted globs in `paths`)
 
@@ -50,14 +50,6 @@ SONNET_ELIGIBLE_AGENTS = {
 HAIKU_ELIGIBLE_AGENTS = {"v-memory"}
 HAIKU_TOOLS = {"Read", "Grep", "Glob"}   # a Haiku agent may read; it may not act
 
-# v3 agents still in the tree until plan Task 11 deletes them. They keep the v3 rules
-# (transport on Sonnet; `memory: project` on the two reviewers) so the tree lints clean
-# in between. Task 11 deletes this set together with the files.
-V3_LEGACY_AGENTS = {"implementer", "parallel-dispatcher", "partition-reviewer",
-                    "spec-reviewer", "transport"}
-V3_LEGACY_SONNET = {"transport"}
-V3_LEGACY_MEMORYLESS = {"implementer", "parallel-dispatcher"}
-
 # Claude Code's native persistent subagent memory (3.5.0). The field takes exactly
 # three scopes, each naming a directory the harness creates on first write:
 #   user    -> ~/.claude/agent-memory/<name>/
@@ -70,10 +62,8 @@ MEMORY_SCOPES = ("user", "project", "local")
 # v4: no agent carries `memory:` (plan Task 9). Project knowledge lives in
 # docs/compound-v/ and is read on demand by `v-memory`; a per-agent memory directory
 # would be a second, unreviewed store. `memoryless(name)` is True for every agent
-# except the v3 reviewers that Task 11 deletes.
+# (all of them).
 def memoryless(name: str) -> bool:
-    if name in V3_LEGACY_AGENTS:
-        return name in V3_LEGACY_MEMORYLESS
     return True
 
 
@@ -239,7 +229,7 @@ def lint_file(path: pathlib.Path, rel=None) -> list:
         name = agent_name
         if name in HAIKU_ELIGIBLE_AGENTS:
             allowed = ("haiku", "sonnet", "opus")
-        elif name in SONNET_ELIGIBLE_AGENTS or name in V3_LEGACY_SONNET:
+        elif name in SONNET_ELIGIBLE_AGENTS:
             allowed = ("opus", "sonnet")
         else:
             allowed = ("opus",)
@@ -462,10 +452,11 @@ def _selftest() -> int:
                    if "missing required" in i]) == 2)
 
         # `memory` (3.5.0) — the native persistent-memory scope.
-        check("agent with memory: project clean",
-              issues_for("agents/mem.md",
-                         "---\nname: spec-reviewer\ndescription: d\nmodel: opus\n"
-                         "memory: project\n---\nbody\n") == [])
+        check("agent with memory: project is flagged (no agent carries memory)",
+              any("must NOT carry a 'memory' field" in i for i in issues_for(
+                  "agents/mem.md",
+                  "---\nname: spec-reviewer\ndescription: d\nmodel: opus\n"
+                  "memory: project\n---\nbody\n")))
         for good in ("user", "project", "local"):
             check(f"memory: {good} accepted",
                   not any("memory must be one of" in i
@@ -541,10 +532,6 @@ def _selftest() -> int:
                   "agents/domain-expert.md",
                   "---\nname: domain-expert\ndescription: d\nmodel: sonnet\n"
                   "memory: project\n---\nb\n")))
-        check("a v3 legacy reviewer may still carry memory until Task 11",
-              issues_for("agents/spec-reviewer.md",
-                         "---\nname: spec-reviewer\ndescription: d\nmodel: opus\n"
-                         "memory: project\n---\nb\n") == [])
 
         # unchanged policies still hold
         check("haiku still rejected anywhere",
