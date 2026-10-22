@@ -188,7 +188,9 @@ diff against its lane, then the project's tests on the merged tree. Release test
   - Two independent v4 builds per condition (greenfield salon, brownfield feature on A5's base); each judged blind by
     Codex twice (rubric + census), paired against the reference with labels swapped.
   - Pass: greenfield mean rubric ≥ A5's mean (96.5) **and** mean census "considered" ≥ A5's (75.5) **and** mean cost
-    ≤ $7; brownfield mean rubric ≥ C-light's mean (76.5) with no regression in the base tests. A miss is a release
+    ≤ $7 (Oleg: the budget counts **Claude spend only**; other models are not counted for now). The binding
+    configuration has no Codex — the reviewer is a Claude subagent, so its cost is inside the $7; the Codex-reviewer
+    configuration is run and recorded alongside, not gated. Brownfield mean rubric ≥ C-light's mean (76.5) with no regression in the base tests. A miss is a release
     blocker for 4.0.0.
   - Holdout: one different small app, v4 vs the light flow alone, one build each, to catch overfitting to the salon.
 
