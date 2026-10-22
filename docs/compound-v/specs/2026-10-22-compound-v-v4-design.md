@@ -92,8 +92,8 @@ persisted state, missing config). Parallel writers: see §6.
 1. **Tests**: the project's own tests pass.
 2. **Executable review** by a second model — Codex if installed, otherwise a fresh Claude subagent (Opus; Fable only by
    choice) — in an isolated checkout, judged against the **original request** plus the acceptance table and checklists,
-   with structured findings. Then a fix round. **At most two review→fix rounds**; the check after the second fix is
-   tests + browser + scope only, not a third review **(call)**.
+   with structured findings. Then a fix round and a second review. **At most two reviews**; if the second review still
+   has blocker/high findings, the run ends **incomplete** with them recorded, with no third review and no unreviewed "fixed" **(call)**.
 3. **Real-world check**: for web apps a real browser submits real forms and the resulting state is checked; for non-web
    projects the binary/API is run for the main flows. curl is not enough for web forms.
 4. **Scope check**: git diff of the run against the plan's lanes (or, without lanes, against the declared change set).
@@ -123,7 +123,10 @@ receipts. Unclassifiable ⇒ full.
   browser missing, budget hit, reviewer timeout, rounds exhausted with findings open) / **failed** (a step ran and
   failed). Only verified may be reported as done; incomplete and failed name the step and reason.
 - The Stop hook reads `verify`'s result: while it is not verified it refuses the stop **once** with the reason; the
-  second stop is allowed and the run stays incomplete/failed. The session is never trapped.
+  second stop is allowed and the run stays incomplete/failed. The session is never trapped. A change request the
+  engagement hook classified with **no run started** is refused once as well ("start a run, or say no files
+  changed"), so ignoring the skills is not a way around the bar **(call)**. The hook binds runs to sessions, because
+  only hooks see the session id.
 - No browser for a web app ⇒ **incomplete**, unless the user waives the check in chat; the waiver is recorded in the
   receipt. Browser source: Claude Code's own browser tooling or a Playwright/Chrome DevTools MCP the project already
   has; `/compound-v:init` detects which exists and offers the Playwright MCP if none. The plugin ships no browser.
@@ -151,8 +154,9 @@ receipts. Unclassifiable ⇒ full.
 - **Commands**: `/compound-v:init` (probes incl. browser and Superpowers, stance, light/full default, taxonomy if triage
   needs it), `onboard`, `pr-review`, `models` (model map for the plan table), `adr` (optional). No
   dispatch/orchestrate/resume/status/epic.
-- **Memory**: project docs under `docs/compound-v/` (specs, plans, pre-flights, runs, receipts, decisions) + Claude
-  Code's own project memory. No separate V-memory engine (overrides `transition.md`'s optional V-memory).
+- **V-memory** (Oleg): the name now means the docs layer itself. Project docs under `docs/compound-v/` (specs,
+  plans, pre-flights, runs, receipts, decisions) are searched on demand by a cheap `v-memory` subagent (grep + read,
+  read-only), with no index, no vector store and no embeddings. Claude Code's own project memory stays alongside.
 - **Session continuity**: the banner and compaction hooks restore position from the run record, spec and plan.
 
 ## 6. What carries over, changes, goes

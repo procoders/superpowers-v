@@ -54,7 +54,7 @@
 | `schemas/review-findings.schema.json` | Reviewer output shape (Codex `--output-schema` and Claude reviewer) |
 | `hooks/{prompt,stop,session,guard}.sh`, `hooks/hooks.json`, `hooks/run-band.tsx` | Thin hook wrappers and the band |
 | `skills/{brainstorm,plan,build,verify,init,onboard,pr-review}/` | The prose |
-| `agents/{recall,code-archaeologist,doc-validator,domain-expert,reviewer}.md` | Subagents |
+| `agents/{v-memory,code-archaeologist,doc-validator,domain-expert,reviewer}.md` | Subagents |
 | `tests/core/test_*.py`, `tests/core/helpers.py`, `tests/hooks/test-*.sh` | Tests |
 
 Carried as-is: `scripts/compound-v-run-with-timeout.py`, `scripts/lint-frontmatter.py` (edited), `scripts/compound-v-onboard.py` (decoupled), `skills/pr-review/`.
@@ -110,7 +110,7 @@ Carried as-is: `scripts/compound-v-run-with-timeout.py`, `scripts/lint-frontmatt
 
 **Interfaces — Consumes:** `snapshot.tree`, `gitio.git`. **Produces:**
 - `run.RUNS = "docs/compound-v/runs"`, `run.STAGES`, `run.TIERS`.
-- `run.start(repo, *, tier, request: str, spec: str|None = None, base: str = "HEAD", change_set: list[str] = [], session_id: str|None = None) -> dict`. It writes `<RUNS>/<id>.json`, where id is `YYYYMMDD-HHMMSS-<slug of request, ≤24 chars>`. The stage is `brainstorm` for full and `build` for light. `base_commit` is the resolved sha. It also sets `review_round: 0`, `receipts: {}`, `waivers: {}`, `stop_refusals: []`, `sessions: [session_id] if given`, `usage: {}`, `outcome: null`, and `test_cmd`, `budget_usd` and `reviewer` read from `.claude/compound-v.json` when present.
+- `run.start(repo, *, tier, request: str, spec: str|None = None, base: str = "HEAD", change_set: list[str] = [], session_id: str|None = None) -> dict`. It writes `<RUNS>/<id>.json`, where id is `YYYYMMDD-HHMMSS-<slug of request, ≤24 chars>`. The stage is `brainstorm` for full and `build` for light. `base_commit` is the resolved sha. It also sets `review_round: 0`, `receipts: {}`, `waivers: {}`, `stop_refusals: []`, `sessions: [session_id] if given`, `usage: {}`, `usage_by_stage: {}`, `escalations: []`, `lane_state: {}`, `external: {}`, `outcome: null`, and `test_cmd`, `budget_usd` and `reviewer` read from `.claude/compound-v.json` when present.
 - `run.load(repo, run_id) -> dict`. `run.save(repo, rec) -> None` writes atomically (temp + `os.replace`).
 - `run.active(repo, session_id: str|None = None) -> dict|None`. It returns the newest open run (`outcome is null`) whose `sessions` contains `session_id`, else the newest open run with an empty `sessions`, else `None`. It never returns a run bound only to other sessions.
 - `run.bind(repo, rec, session_id) -> dict` appends the session if absent.
@@ -169,10 +169,12 @@ Carried as-is: `scripts/compound-v-run-with-timeout.py`, `scripts/lint-frontmatt
 - `receipts.run_step(repo, rec, step: "tests"|"live"|"scope") -> dict`. tests/live run `test_cmd`/`live_cmd` through run-with-timeout (`timeout_s`, cwd = repo); scope runs `scope.check(base_commit, change_set ∪ lanes)`. It writes `rec["receipts"][step] = {step, result: "pass"|"fail"|"error", exit, cmd, snapshot, ignored_env, acceptance_rev, tier, at, duration_s, tail}` plus `mac` = HMAC-SHA256(key, canonical JSON without `mac`). The tests step also compares `test_files`: any plan-time test file now missing gives `result: "fail"` and `reason: "tests removed: …"`. A step command that is missing for a required step gives `result: "error"` and `reason: "no live_cmd"`.
 - `receipts.record_review(repo, rec, findings_path, reviewer: "codex"|"claude") -> dict`. It validates the findings JSON against the schema's required keys (`snapshot`, `findings[] {id, severity: blocker|high|medium|low, title, evidence, reproduce}`, `summary`). Then:
   - `snapshot` must equal the current `tree()`, else `result: "error"` (`reason: "stale review"`).
-  - If `review_round` is already 2, it raises `RunError("review rounds exhausted")`.
+  - If `review_round` is already 2, it raises `RunError("review rounds exhausted")`. A second review that still has blocker or high findings makes the run outcome incomplete; there is no third review (spec §4.5).
   - Otherwise `review_round` goes up by 1. The result is pass iff no blocker/high findings; findings are stored in full.
 - `receipts.waive(repo, rec, step, reason: str) -> dict` records `{reason, at, by: "user-in-chat (not machine-verifiable)"}`. Allowed only for `live`.
 - `receipts.status(repo, rec) -> {"outcome": "verified"|"incomplete"|"failed"|"pending", "missing": [], "stale": [], "failed": [], "waived": [], "budget": {"limit": x, "spent": y|null, "exceeded": bool}}`. A receipt is stale if its `snapshot`, `ignored_env`, `acceptance_rev` or `tier` differs from the current state, or if its `mac` does not verify. "verified" requires every required step to have a pass receipt that is current (or a waiver for `live`). "failed" means some current receipt has a fail result and no round is left to fix it. "incomplete" covers a set outcome, an exceeded budget, rounds exhausted with findings open, or an `error` receipt. "pending" covers everything else.
+- Findings files always live at `docs/compound-v/runs/<id>-review-<n>.json`, which is evidence-excluded. Anywhere else would change the snapshot and stale the receipts that the review itself produced.
+- `review.codex_plan(repo, plan_path, out_path, *, model="gpt-6-astra", timeout_s=900) -> Path` is the optional plan review. It runs with `-s read-only`, against the same schema, and is advisory only: it writes no receipt.
 - `review.codex(repo, rec, out_path, *, model="gpt-6-astra", timeout_s=1200) -> Path`. It materializes the snapshot into a temp dir, runs `setup_cmd` there if set (our process, network allowed), then runs `codex exec -s workspace-write -C <dest> --skip-git-repo-check --ephemeral --output-schema <schema> -o <out_path> -c sandbox_workspace_write.network_access=false -m <model> -` with the filled `review-prompt.md` on stdin, under run-with-timeout. A non-zero rc or an unparsable output raises `ReviewError` (never a pass from a stale file). The out JSON gets `snapshot` set to the materialized tree before `record_review` reads it.
 - CLI: `status` exits 0 when verified, 3 when pending, 4 when incomplete, 5 when failed, and prints the status JSON.
 
@@ -182,7 +184,8 @@ Carried as-is: `scripts/compound-v-run-with-timeout.py`, `scripts/lint-frontmatt
   - `test_hand_written_receipt_rejected`: editing `receipts.tests.result` in the JSON from fail to pass makes `stale` contain `tests` (MAC failure).
   - `test_failed_browser_form_refused`: a `live_cmd` exiting 1 gives `result: "fail"` and an outcome that is not `verified`.
   - `test_skipped_review_refused`: full with tests, live and scope passing but no review gives `missing == ["review"]`.
-  - `test_review_rounds_bounded`: two recorded reviews with high findings, then a third raises `RunError`; status is `incomplete`.
+  - `test_review_rounds_bounded`: two recorded reviews with high findings, then a third raises `RunError`; status is `incomplete`, and fixing the tree afterwards still never yields `verified`.
+  - `test_second_review_pass_verifies`: review 1 high, then a fix, then review 2 clean, plus current tests, live and scope, gives `verified`.
   - `test_stale_review_rejected`: a findings `snapshot` different from the current tree gives `result: "error"` and `stale review`.
   - `test_tests_removed_flagged`: deleting a plan-time `tests/test_a.py` makes the tests receipt `fail` with `tests removed`.
   - `test_light_escalates_on_auth_diff`: a light run with an added `login()` becomes full when `required()` is computed, and its receipts are cleared.
@@ -240,6 +243,7 @@ Carried as-is: `scripts/compound-v-run-with-timeout.py`, `scripts/lint-frontmatt
   - `test_interrupted_worker_refused`: a dirty worktree is refused (`interrupted`).
   - `test_tests_fail_aborts_merge`: `test_cmd = "false"` is refused (`tests failed`), and `git status --porcelain` on main is empty.
   - `test_clean_lane_merges`.
+  - `test_dirty_main_refused`: uncommitted user changes in the main tree give `refused` (`main tree dirty`), with the user's changes untouched.
 - [ ] **Step 2:** Run. Expected: FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Rerun. Expected: 5 OK.
@@ -247,12 +251,12 @@ Carried as-is: `scripts/compound-v-run-with-timeout.py`, `scripts/lint-frontmatt
 
 ### Task 7: Hooks
 
-**Files:** Create `scripts/cvcore/hooks.py`, `hooks/prompt.sh`, `hooks/stop.sh`, `hooks/session.sh`, `hooks/guard.sh`; replace `hooks/hooks.json`. Test: `tests/core/test_hooks.py`, `tests/hooks/test-hooks.sh`.
+**Files:** Create `scripts/cvcore/hooks.py`, `hooks/prompt.sh`, `hooks/stop.sh`, `hooks/session.sh`, `hooks/guard.sh`; replace `hooks/hooks.json`; extend `cli.py` with `hook <stop|prompt|session|guard>`. Test: `tests/core/test_hooks.py`, `tests/hooks/test-hooks.sh`.
 
 **Interfaces — Consumes:** `run.active`, `run.bind`, `receipts.status`, `receipts.required`, `usage.record`, `hud.brief`, `escalate.classify_request`. **Produces:**
 - `hooks.stop_hook(payload: dict, repo: Path, budget_s=6.0) -> dict|None`:
   1. If `hook_event_name != "Stop"` → None.
-  2. Find `rec = run.active(repo, session_id)`. None → None.
+  2. Find `rec = run.active(repo, session_id)`. If it is None: when `state_dir/change-<session>` exists (set by `prompt_hook`) and no `bypass-refused-<session>` marker exists yet, write that marker and block with "This session got a change request but no Compound V run was started. Start one with the compound-v skills, or say that no files changed and stop again." Otherwise return None.
   3. Bind the session, then `usage.record` with the remaining budget.
   4. `stop_hook_active` true → None.
   5. Stage not in (`build`, `verify`) → None.
@@ -260,7 +264,7 @@ Carried as-is: `scripts/compound-v-run-with-timeout.py`, `scripts/lint-frontmatt
   7. Otherwise, with key = `f"{snapshot}:{stage}"`: if key ∉ `stop_refusals`, append it and return `{"decision": "block", "reason": <missing/stale/failed list + "Continue with /compound-v:verify, or, if you are waiting on the user or a step cannot run, say so and stop again — the run will be recorded incomplete.">}`.
   8. Else set `outcome = "failed" if s["failed"] else "incomplete"` and return None.
   Any exception → None.
-- `hooks.prompt_hook(payload, repo, state_dir: Path) -> str|None`. It returns the additionalContext text, or None. It ports v3's filters: slash command, a short question (≤ 200 chars ending `?`), a short read instruction (≤ 80 chars starting `read|show me|explain|summarize|look at|cat`), and the closed greeting list from `triage-prompt-nudge.sh:578`. It keeps v3's per-session markers and counters under `state_dir` (`_MAX_ATTEMPTS = 3` nudges per session). An open run for this session gets `brief()` instead of a nudge. Otherwise the tier comes from `classify_request`, with None meaning full:
+- `hooks.prompt_hook(payload, repo, state_dir: Path) -> str|None`. It returns the additionalContext text, or None. On every call it first binds the newest **unbound** open run to this `session_id` (`run.bind`); skills cannot see the session id, so the hook does the binding. When it classifies a change request (light or full) and no open run is bound, it writes `state_dir/change-<session>`. It appends one line per decision to `docs/compound-v/runs/triage.log` (evidence-excluded): `{at, session, tier, reason, prompt_chars}`, never the prompt text. It ports v3's filters: slash command, a short question (≤ 200 chars ending `?`), a short read instruction (≤ 80 chars starting `read|show me|explain|summarize|look at|cat`), and the closed greeting list from `triage-prompt-nudge.sh:578`. It keeps v3's per-session markers and counters under `state_dir` (`_MAX_ATTEMPTS = 3` nudges per session). An open run for this session gets `brief()` instead of a nudge. Otherwise the tier comes from `classify_request`, with None meaning full:
   - full → "Compound V: this is a change request (full). Start with the compound-v:brainstorm skill."
   - light → "Compound V: small change (light). Make it, then run the compound-v:verify skill."
 - `hooks.guard_hook(payload) -> dict|None`. For `Write|Edit|MultiEdit|NotebookEdit` whose `file_path` resolves under `docs/compound-v/runs/`, it returns `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Run records are written by scripts/compound-v.py only."}}`.
@@ -278,6 +282,9 @@ Carried as-is: `scripts/compound-v-run-with-timeout.py`, `scripts/lint-frontmatt
   - `test_stop_ignores_other_sessions_run`.
   - `test_stop_brainstorm_stage_never_blocks`.
   - `test_stop_hook_under_budget_with_big_transcript`: a 200k-line transcript returns within 7 s.
+  - `test_stop_blocks_once_when_change_request_but_no_run`: `prompt_hook("add a booking page")` with no run, then a stop, blocks once; the second stop gives None.
+  - `test_prompt_binds_unbound_run`: a run started without a session gets the payload's `session_id` on the next prompt.
+  - `test_triage_log_has_no_prompt_text`.
   - `test_prompt_filters`: `"hi"`, `"/compound-v:init"` and `"what is this?"` give None; `"add a booking page"` gives the full text; `"fix typo in README"` gives light.
   - `test_guard_denies_run_record_edit`, plus `test_guard_allows_other_paths`.
   - `test-hooks.sh`: `test_hooks_silent_outside_git` (each wrapper in a non-git temp dir exits 0 with empty stdout); `test_broken_python_fails_open` (with `PATH` holding a `python3` that exits 1, stop.sh exits 0 with empty stdout); `test_not_set_up_notice_once`.
@@ -288,7 +295,7 @@ Carried as-is: `scripts/compound-v-run-with-timeout.py`, `scripts/lint-frontmatt
 
 ### Task 8: Band
 
-**Files:** Rewrite `hooks/run-band.tsx`, `hooks/run-band.test.tsx`, `types/index.d.ts` (state key `plugin: "compound-v"`).
+**Files:** Rewrite `hooks/run-band.tsx`, `hooks/run-band.test.tsx`; create `tests/hooks/test-band.sh` (runs `claude plugin validate .` + `claude plugin test .`, skips with a notice when `claude` is absent); `types/index.d.ts` (state key `plugin: "compound-v"`).
 
 **Interfaces — Consumes:** `compound-v.py hud` (JSON from `hud.band`).
 
@@ -302,21 +309,21 @@ The band has one header line: `V <run> · <stage> (<tier>) · tests ● review �
 
 ### Task 9: Cycle skills and agents
 
-**Files:** Create `skills/brainstorm/SKILL.md`, `skills/brainstorm/territory.md`, `skills/plan/SKILL.md`, `skills/plan/checklists.md` (from `docs/v4/light-flow.md` §1–2, adapted), `skills/build/SKILL.md`, `skills/verify/SKILL.md`, `agents/recall.md`, `agents/reviewer.md`; rewrite `agents/{code-archaeologist,doc-validator,domain-expert}.md`; edit `scripts/lint-frontmatter.py`. Test: `tests/hooks/test-skills.sh`.
+**Files:** Create `skills/brainstorm/SKILL.md`, `skills/brainstorm/territory.md`, `skills/plan/SKILL.md`, `skills/plan/checklists.md` (from `docs/v4/light-flow.md` §1–2, adapted), `skills/build/SKILL.md`, `skills/verify/SKILL.md`, `agents/v-memory.md`, `agents/reviewer.md`; rewrite `agents/{code-archaeologist,doc-validator,domain-expert}.md`; edit `scripts/lint-frontmatter.py`. Test: `tests/hooks/test-skills.sh`.
 
 Content decisions, each one a requirement for the prose:
 - **brainstorm:**
   - Open with one line offering to skip the questions, then one open question; one question per message after that.
   - Cover `territory.md` as ground, not a script: product and users, data lifecycle (create / change / retire with history / delete, operator changes without a developer), jurisdiction + data + deployment, security and every form, operations, edge cases.
   - For work bigger than a small change, ask "how deep" (quick / standard / thorough). Depth adds pre-flights and checks and never removes the tier minimum.
-  - Before the first question, dispatch `compound-v:recall` (Sonnet, read-only) over `docs/compound-v/` and show its hits as evidence.
+  - Before the first question, dispatch `compound-v:v-memory` (Sonnet, read-only) over `docs/compound-v/` and show its hits as evidence.
   - Write `docs/compound-v/specs/YYYY-MM-DD-<topic>.md`, run `compound-v.py run start --tier full --request-file <tmp with the user's original words> --spec <path>`, and get the user's approval of the spec before going on.
   - Then `run stage --to preflight` and dispatch, in one message: domain-expert always (≤ 4 searches); code-archaeologist when `git ls-files` has source outside `docs/`, `.claude/` and images; doc-validator when the spec names a dependency. Each writes `docs/compound-v/preflight/<date>-<topic>-<kind>.md`.
 - **plan:**
   - Write `docs/compound-v/plans/<date>-<topic>.md` with `## Acceptance` (rows: behaviour → check), `## Tasks`, `## Task → model`, and `## Lanes` only when parallel. Apply `checklists.md`, answering every item "applies / n.a. + why".
   - End with the fenced `compound-v-plan` JSON block (keys as in Task 2). For web projects, `live_cmd` is a real-browser test (Playwright Test against the running app), and the plan includes that test as a task.
   - Run `compound-v.py run plan --plan <path>` and fix any `RunError`, then `run stage --to build`.
-  - Optional plan review: `review codex` is not used here; for a high-stakes plan, offer a read-only Codex pass.
+  - Optional plan review: for a high-stakes plan with Codex installed, offer `compound-v.py review codex-plan --plan <path>`. It is advisory, and its findings are arbitrated in the plan.
 - **build:**
   - One agent by default, with tests written alongside the code (negative paths, state transitions, persisted state, missing config).
   - Parallel only when the plan has `## Lanes`: for each task, `compound-v.py lane start`, then a native subagent with `model` from the table, working in that path and committing there; then `lane finish`. A refusal is fixed or reported, never forced.
@@ -325,12 +332,12 @@ Content decisions, each one a requirement for the prose:
 - **verify:**
   - The order is `receipt tests`, `receipt live` (if required), `receipt scope`, then review.
   - Review: when `reviewer` = codex, `review codex`. Otherwise run `checkout --dest <tmp>` and dispatch `compound-v:reviewer` (Opus) with that path, `review-prompt.md` filled and the findings path; then `review record`.
-  - On fail: `run stage --to build`, fix, and come back (≤ 2 review rounds; after the second fix, re-run tests, live and scope only).
+  - On a failed first review: `run stage --to build`, fix, re-run tests, live and scope, then do the second review. If the second review still fails, report incomplete with its findings. Never a third review, and never "fixed" without a review.
   - Finish with `status` and report the outcome, the missing/failed steps, waivers and usage. Say "done" only when the outcome is verified.
   - When no browser can run, ask the user whether to waive; only on their yes, `waive live --reason "<their words>"`.
   - A light run with no run record starts one: `run start --tier light --request-file … --change-set <globs of the intended files>`.
-- **agents:** `recall`, `code-archaeologist`, `doc-validator` and `domain-expert` are `model: sonnet` with `maxTurns: 25` and no `memory`. `reviewer` is `model: opus` with `maxTurns: 60`; it may run commands but edits nothing outside its checkout and writes only the findings file. Delete each agent's Step 0 V-memory recall and the `superpowers-v` cache lookups.
-- **lint-frontmatter.py:** `SONNET_ELIGIBLE_AGENTS = {"recall", "code-archaeologist", "doc-validator", "domain-expert"}`, `MEMORYLESS_AGENTS` = all agents. Every other agent must be `model: opus`. Haiku stays rejected everywhere.
+- **agents:** `v-memory` (the V-memory layer: grep + read over `docs/compound-v/`, no index), `code-archaeologist`, `doc-validator` and `domain-expert` are `model: sonnet` with `maxTurns: 25` and no `memory`. `reviewer` is `model: opus` with `maxTurns: 60`; it may run commands but edits nothing outside its checkout and writes only the findings file. Delete each agent's Step 0 V-memory recall and the `superpowers-v` cache lookups.
+- **lint-frontmatter.py:** `SONNET_ELIGIBLE_AGENTS = {"v-memory", "code-archaeologist", "doc-validator", "domain-expert"}`, `MEMORYLESS_AGENTS` = all agents. Every other agent must be `model: opus`. Haiku stays rejected everywhere.
 
 - [ ] **Step 1:** Write `tests/hooks/test-skills.sh`. It asserts:
   - each of the four skills exists with `name` + `description`;
@@ -407,7 +414,7 @@ No code unless a check fails. Each failure becomes a fix with a test in the owni
   - (a) In a temp marketplace, `claude plugin marketplace add <tmp>` then `claude plugin install superpowers-v@procoders` installs from `ref: v3`. This needs the `v3` branch reachable: use a local file-URL clone of this repo as `repo`.
   - (b) Project-level `enabledPlugins: {"superpowers@claude-plugins-official": false}` disables Superpowers in that project (`claude plugin list` inside it).
   - (c) A Stop hook that exits 1 does not block (a broken `stop.sh` copy in a scratch plugin).
-  - (d) `$.session.usage().cost`: read its declared type in the installed CLI's `types/claude-code.d.ts`. Record the facts in `docs/compound-v/preflight/2026-10-22-v4-platform-audit.md` under "Verified in Task 13".
+  - (e) a sandboxed `npx playwright test` in a throwaway repo launches Chromium from the cache `setup.sh` filled, with the kit's `allowedDomains` unchanged; (d) `$.session.usage().cost`: read its declared type in the installed CLI's `types/claude-code.d.ts`. Record the facts in `docs/compound-v/preflight/2026-10-22-v4-platform-audit.md` under "Verified in Task 13".
 - [ ] **Step 2: Light path, headless,** in a throwaway repo with the salon kit's sandbox settings. Never against this repo; no `--dangerously-skip-permissions`. Run `claude -p` with `--plugin-dir <this repo>` and "fix the typo in README". Expected: a run record with tier light, outcome verified, and receipts tests + scope.
 - [ ] **Step 3: Full path, headless:** a tiny web feature (one form) in a throwaway Node repo, with scripted answers through the kit's `turn.sh`. Expected:
   - stages brainstorm → done;
@@ -426,7 +433,8 @@ No code unless a check fails. Each failure becomes a fix with a test in the owni
   - the plugin is `--plugin-dir` of the commit under test (sha recorded);
   - no Superpowers; reviewer = Claude subagent (binding configuration);
   - answers from `answers-salon.md`, given only to questions the run asks;
-  - cost = the sum of `total_cost_usd` over turns;
+  - cost = the sum of `total_cost_usd` over turns. This is the gate's authority; the run record's `cost_usd` is advisory, and Task 13 records the delta between the two once.
+  - Playwright browsers are pre-installed by `setup.sh` outside the sandbox (`npx playwright install chromium` into the default cache) for every condition. The sandbox's `allowedDomains` stay as they are; Task 13 checks that a sandboxed `npx playwright test` can launch from that cache;
   - judging: Codex `gpt-6-astra` with the existing `blind6/RUBRIC.md` and the census prompt, twice each, with labels swapped.
   The holdout is a small "community tool library" app (members, items, loans with due dates, overdue list, staff admin), with `answers-holdout.md` written once before any run.
 - [ ] **Step 2: Runs:**
