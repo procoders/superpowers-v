@@ -89,6 +89,17 @@ class ReceiptsTest(Base):
         self.assertEqual({"limit": 7, "spent": None, "exceeded": False},
                          {k: s["budget"][k] for k in ("limit", "spent", "exceeded")})
 
+    def test_review_findings_outside_repo_copied(self):
+        self.steps()
+        before = snapshot.tree(self.repo)
+        r = self.review("low")
+        copy = self.repo / r["findings_file"]
+        self.assertEqual(f"docs/compound-v/runs/{self.rec['id']}-review-1.json",
+                         r["findings_file"])
+        self.assertEqual("F1", json.loads(copy.read_text())["findings"][0]["id"])
+        self.assertEqual(before, snapshot.tree(self.repo))
+        self.assertEqual("verified", self.status()["outcome"])
+
     def test_edit_after_receipt_goes_stale(self):
         self.steps()
         self.review()
@@ -195,6 +206,10 @@ class ReceiptsTest(Base):
         r = subprocess.run(cmd + ["status"], cwd=self.repo, env=env, capture_output=True,
                            text=True)
         self.assertEqual(["review"], json.loads(r.stdout)["missing"])
+        r = subprocess.run(cmd + ["waive", "live", "--reason", "no browser", "--id",
+                                  self.rec["id"]], cwd=self.repo, env=env,
+                           capture_output=True, text=True)
+        self.assertEqual(0, r.returncode, r.stderr)
 
 
 class LightTest(Base):

@@ -11,6 +11,7 @@ from .snapshot import materialize, tree
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = ROOT / "schemas/review-findings.schema.json"
 PROMPT = ROOT / "skills/verify/review-prompt.md"
+CHECKLISTS = ROOT / "skills/plan/checklists.md"
 MODEL = "gpt-6-astra"
 PLAN_PROMPT = """Review this implementation plan adversarially before anything is built. Judge it
 against the user's request, not against itself: missing acceptance rows, steps that cannot be
@@ -37,6 +38,13 @@ def _section(text: str, title: str) -> str:
     return text[m.end():m.end() + nxt.start() if nxt else len(text)].strip()
 
 
+def _read(path) -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 def prompt(repo, rec, snapshot_id: str) -> str:
     plan = ""
     if rec.get("plan"):
@@ -58,7 +66,7 @@ def prompt(repo, rec, snapshot_id: str) -> str:
                     + "\n</previous_round>")
     slots = {"{request}": rec.get("request") or "(none recorded)",
              "{acceptance}": _section(plan, "Acceptance") or "(no acceptance table)",
-             "{checklists}": _section(plan, "Checklists") or "(none)",
+             "{checklists}": _read(CHECKLISTS) or "(no checklists file)",
              "{snapshot}": snapshot_id, "{setup_cmd}": rec.get("setup_cmd") or "none",
              "{previous}": previous}
     text = PROMPT.read_text(encoding="utf-8")

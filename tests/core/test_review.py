@@ -63,6 +63,16 @@ class ReviewTest(Base):
         with self.assertRaises(review.ReviewError):
             review.codex(self.repo, self.reload(), self.out, timeout_s=60)
 
+    def test_cli_review_codex_records_round(self):
+        import subprocess
+        env = dict(os.environ, HOME=str(self.tmp / "clihome"))
+        r = subprocess.run([sys.executable, str(helpers.SCRIPTS / "compound-v.py"), "review",
+                            "codex", "--id", self.rec["id"], "--timeout", "60"],
+                           cwd=self.repo, env=env, capture_output=True, text=True)
+        self.assertEqual(0, r.returncode, r.stderr)
+        self.assertTrue(self.out.is_file())
+        self.assertEqual(1, self.reload()["review_round"])
+
 
 if __name__ == "__main__":
     unittest.main()

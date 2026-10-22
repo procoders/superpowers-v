@@ -174,6 +174,7 @@ def record_review(repo, rec, findings_file, reviewer) -> dict:
                                           "open": open_, "file": f"{run.RUNS}/{dest.name}"})
     return _store(repo, rec, "review", cur, {
         "result": result, "cmd": reviewer, "round": n, "findings": data["findings"],
+        "findings_file": f"{run.RUNS}/{dest.name}",
         "tail": data["summary"][:2000], "open": open_})
 
 

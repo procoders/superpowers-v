@@ -76,7 +76,7 @@ def cmd_receipt(a, repo):
 
 def cmd_review(a, repo):
     rec = _pick(repo, a)
-    if a.action == "codex" and a.plan:
+    if a.action == "codex-plan":
         out = a.out or str(Path(repo) / run.RUNS / f"{rec['id']}-plan-review.json")
         _out({"plan_review": str(review.codex_plan(repo, a.plan, out, model=a.model,
                                                     request=rec.get("request") or ""))})
@@ -146,15 +146,17 @@ def parser() -> argparse.ArgumentParser:
     co = rv.add_parser("codex", parents=[withid])
     co.add_argument("--model", default=review.MODEL)
     co.add_argument("--timeout", type=int, default=1200)
-    co.add_argument("--plan")
-    co.add_argument("--out")
+    cp = rv.add_parser("codex-plan", parents=[withid])
+    cp.add_argument("--plan", required=True)
+    cp.add_argument("--out")
+    cp.add_argument("--model", default=review.MODEL)
     rr = rv.add_parser("record", parents=[withid])
     rr.add_argument("--findings", required=True)
     rr.add_argument("--reviewer", required=True, choices=("codex", "claude"))
-    for x in (co, rr):
+    for x in (co, cp, rr):
         x.set_defaults(fn=cmd_review)
     wv = sub.add_parser("waive", parents=[withid])
-    wv.add_argument("--step", required=True)
+    wv.add_argument("step", choices=receipts.WAIVABLE)
     wv.add_argument("--reason", required=True)
     wv.set_defaults(fn=cmd_waive)
     sub.add_parser("status", parents=[withid]).set_defaults(fn=cmd_status)
