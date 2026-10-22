@@ -7,7 +7,9 @@ description: Use after a Compound V spec is approved and its pre-flights are bac
 
 A plan is the set of decisions a builder cannot make alone: which files, which behaviours, which checks prove them. Write it for an engineer who has not seen this conversation. The acceptance table is the contract that both the build and the review are held to.
 
-All `compound-v.py` calls below are `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" …` with the run's `--id <id>` (take it from `run show` if you lost it).
+All `compound-v.py` calls below are `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" …` with the run's `--id <id>` (the session brief prints it as `Compound V run <id>` if you lost it).
+
+**Commands.** Run each command as one plain command line with literal values (the run id, real paths): no shell variables you set yourself, no `;` or `&&` chains, no `$?`. The sandbox's auto-allow refuses compound commands.
 
 ## 0. Inputs
 
@@ -90,12 +92,12 @@ A `RunError` names the missing key or section. Fix the plan and run it again unt
 ## 4. Optional plan review (Codex)
 
 For a high-stakes plan (payments, auth, personal data at scale, or depth `thorough`), when `codex` is installed, offer it once:
-`compound-v.py review codex-plan --plan <path>`. It is advisory and writes no receipt. Arbitrate each finding in a `## Plan review` section of the plan: accepted (and the change made) or rejected (and why). Then rerun `run plan`.
+`compound-v.py review codex-plan --id <id> --plan <path>`. It is advisory and writes no receipt. Arbitrate each finding in a `## Plan review` section of the plan: accepted (and the change made) or rejected (and why). Then rerun `run plan`.
 
 ## 5. Hand off
 
 Tell the user in a few lines: the plan path, the number of acceptance rows, lanes or not, and any assumption made for an open owner fact. The approved spec was the gate. Ask again only when the plan contradicts something the user decided. Then:
 
-`compound-v.py run stage --id <id> --to build`, and invoke `compound-v:build`.
+`compound-v.py run stage --id <id> --to build`, and invoke `compound-v:build`. Change no code before this point: the Stop hook refuses once when application code changed before the plan was attached and the run moved to build.
 
 Task right-sizing adapted from Superpowers `writing-plans` (MIT, Jesse Vincent).

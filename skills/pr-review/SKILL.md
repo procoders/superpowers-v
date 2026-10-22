@@ -5,6 +5,8 @@ description: Use when the user wants to deeply review a pull/merge request or a 
 
 # PR Review — Two-Axis, Stack-Agnostic Deep Code Review
 
+**Commands.** Run each command as one plain command line with literal values (real refs and paths): no shell variables you set yourself, no `;` or `&&` chains, no `$?`. The sandbox's auto-allow refuses compound commands.
+
 ## Philosophy
 
 The purpose of reviewing a change is to build **shared understanding** of what the change is trying to do, then systematically hunt for the bugs and edge cases that intent reveals. Every diff carries implicit assumptions, unstated invariants, and ambiguous decisions. The review walks through them one by one.
@@ -165,15 +167,15 @@ So a review never disturbs the user's working tree or another concurrent review 
 4. Run all grep/read against the worktree with absolute paths.
 
 ```bash
-MAIN_REPO="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
-REPO_NAME="$(basename "$(git rev-parse --show-toplevel)")"
-REVIEW_WT="$MAIN_REPO/../${REPO_NAME}-reviews/pr-{n}"
-# GitHub: git fetch origin "pull/{n}/head" ; GitLab: git fetch origin "merge-requests/{n}/head"
-git fetch origin "<pull-ref>"
-git worktree add --detach "$REVIEW_WT" FETCH_HEAD
+git rev-parse --path-format=absolute --git-common-dir   # its parent directory is <main-repo>
+git rev-parse --show-toplevel                           # its last path part is <repo>
+git fetch origin <pull-ref>                             # GitHub: pull/{n}/head; GitLab: merge-requests/{n}/head
+git worktree add --detach <main-repo>/../<repo>-reviews/pr-{n} FETCH_HEAD
 ```
 
-- Reuse `$REVIEW_WT` if it exists; refresh to the head SHA if stale.
+Below, `<review-wt>` is that worktree path, written out literally.
+
+- Reuse `<review-wt>` if it exists; refresh to the head SHA if stale.
 - If worktree creation fails, fall back to read-only inspection: fetch the ref and read files via `git show <ref>:{path}`.
 - **Skip the worktree in local mode — but not the isolation.** When the target is a **ref or a range**, read
   from the ref: every file read for the review comes from `git show <ref>:{path}` (the fallback above), and
@@ -185,7 +187,7 @@ git worktree add --detach "$REVIEW_WT" FETCH_HEAD
   exists at the reviewed commit; reading the tree produced a false finding that survived into a written draft
   and was caught only by an unrelated `git ls-tree` cross-check.
 - The **findings file lives in the launch repo** (`./reviews/`), never inside the disposable worktree.
-- Offer `git worktree remove "$REVIEW_WT"` at the end (decline if another session may still use it).
+- Offer `git worktree remove <review-wt>` at the end (decline if another session may still use it).
 
 ---
 

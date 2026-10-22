@@ -7,6 +7,8 @@ description: Use when a Compound V run has an attached plan and is at stage buil
 
 Claude Code builds natively. This skill sets what a good build does and the few commands that keep it honest. All `compound-v.py` calls are `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" …` with `--id <id>`.
 
+**Commands.** Run each command as one plain command line with literal values (the run id, real paths): no shell variables you set yourself, no `;` or `&&` chains, no `$?`. The sandbox's auto-allow refuses compound commands.
+
 ## 0. Start
 
 `compound-v.py run show --id <id>`. The stage must be `build` and the plan must be attached (`test_cmd`, `change_set` are set). If it is not, go back to `compound-v:plan`. Read the plan in full, including `## Constraints`, `## Acceptance` and `## Checklists`.
@@ -56,7 +58,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" lane finish --id <id> --ta
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" status --id <id>
 ```
 
-`status` exits 3 while the run is pending. That is normal: read the JSON rather than treating the exit code as an error. When `budget.stage_exceeded` lists `build`, stop adding scope: finish the current task and go to verification. Verification's share of the budget is reserved and must not be spent here. `spent: null` means the cost is unknown. Say so, and carry on.
+`status` exits 3 while the run is pending. That is normal: read the JSON rather than treating the exit code as an error. When `budget.stage_exceeded` lists `build`, stop adding scope: finish the current task and go to verification. Verification's share of the budget is reserved and must not be spent here. `spent: null` means the cost is unknown. Say so, and carry on. Cost is as of the last completed turn: the CLI writes its cost record when a turn ends, so a single-turn `claude -p` run reports it as unknown.
 
 ## 4. Hand off
 

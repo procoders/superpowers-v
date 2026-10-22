@@ -7,9 +7,11 @@ description: Compound V verification (not the native /verify). Use when a Compou
 
 The CLI is the authority here, not you. Each step runs a real command and writes a signed receipt bound to the exact working tree. An edit after a receipt makes it stale. You run the steps, fix what fails, and report what the CLI says. All calls are `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" … --id <id>`.
 
+**Commands.** Run each command as one plain command line with literal values (the run id, real paths): no shell variables you set yourself, no `;` or `&&` chains, no `$?`. The sandbox's auto-allow refuses compound commands.
+
 ## 0. Find or start the run
 
-`compound-v.py run show` prints the open run for this session. Take its `id`.
+The session brief (at session start and on your prompts: `Compound V run <id>: stage …`) names this session's run. Use that id: `run show --id <id>`. Without `--id` the CLI answers only when exactly one run is open in the repo, because it cannot tell which session a run belongs to.
 
 **No run, after a small change** (typo, copy, config): start a light run whose `--change-set` globs cover exactly the files you meant to change (`git status --short` shows them). Pass the user's request on stdin:
 
@@ -20,7 +22,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" run start --tier light \
 REQUEST
 ```
 
-A light run needs `tests` and `scope`, plus `live` when the diff touches UI. It takes `test_cmd` from `.claude/compound-v.json`. If the stage is `build`, run `run stage --id <id> --to verify` first.
+A light run needs `tests` and `scope`, plus `live` when the diff touches UI. It takes `test_cmd`, `live_cmd` and `is_web` from `.claude/compound-v.json`. When your diff touches UI (HTML, CSS, templates, components, `public/`) and the config has no `live_cmd`, ask the user one question before starting the run: the command that checks the page in a real browser, or a waiver of that check. Pass a command with `--live-cmd '<command>'`; record a waiver with `waive live` once the run exists. If the stage is `build`, run `run stage --id <id> --to verify` first.
 
 **Escalation.** The CLI reclassifies the diff by its content (auth, sessions, payments, personal data, new endpoints or forms, a big or binary diff). A light run can become full, and its receipts are then cleared. Tell the user why, in one line with the CLI's reasons, and do the full steps. Without a plan, the review judges against the request alone.
 
@@ -41,15 +43,16 @@ Each one prints its receipt: `result` is `pass`, `fail` or `error`, followed by 
 
 ## 2. Executable review (full runs)
 
-Required for full runs, at most two rounds. Read `reviewer` from `run show` (`codex` or `claude`; empty means `claude`).
+Required for full runs, at most two rounds. Read `reviewer` from `run show --id <id>` (`codex` or `claude`; empty means `claude`).
 
 **Codex:** `compound-v.py review codex --id <id>`. The CLI materializes the tree, runs Codex there, and records the result.
 
 **Claude** (the default):
 
+Run `mktemp -d` on its own and use the directory it prints, literally, as `<dir>` below:
+
 ```bash
-D="$(mktemp -d)"
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" checkout --dest "$D/tree"   # prints {"tree": ..., "dest": ...}
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" checkout --id <id> --dest <dir>/tree   # prints {"tree": ..., "dest": ...}
 ```
 
 Fill `${CLAUDE_PLUGIN_ROOT}/skills/verify/review-prompt.md`:
@@ -60,10 +63,10 @@ Fill `${CLAUDE_PLUGIN_ROOT}/skills/verify/review-prompt.md`:
 - `{setup_cmd}`: the plan's `setup_cmd`, or `none`;
 - `{previous}`: for round 2, the round-1 findings from `docs/compound-v/runs/<id>-review-1.json`; for round 1, `none`.
 
-Dispatch the `compound-v:reviewer` agent with the filled prompt, `CHECKOUT=$D/tree`, `FINDINGS=$D/findings.json`, and the round. The findings file must stay outside the repo: inside it, the file would change the tree and stale the review. `review record` copies it into `docs/compound-v/runs/` itself. Then:
+Dispatch the `compound-v:reviewer` agent with the filled prompt, `CHECKOUT=<dir>/tree`, `FINDINGS=<dir>/findings.json`, and the round. The findings file must stay outside the repo: inside it, the file would change the tree and stale the review. `review record` copies it into `docs/compound-v/runs/` itself. Then:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" review record --id <id> --findings "$D/findings.json" --reviewer claude
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" review record --id <id> --findings <dir>/findings.json --reviewer claude
 ```
 
 The CLI checks that the findings belong to the current tree, stores them under `docs/compound-v/runs/`, and passes the review only when there are no blocker or high findings.
@@ -89,7 +92,7 @@ Report to the user:
 - the **outcome** in the first line, then each step's state;
 - review findings still open, and acceptance rows unmet or untested;
 - waivers, quoted, marked "waived by you in chat, not machine-checked";
-- cost: `budget.spent` in USD, labelled "the CLI's estimate", against `budget.limit`, or "unknown" when it is null. Codex time is recorded separately and is not in that figure.
+- cost: `budget.spent` in USD, labelled "the CLI's estimate", against `budget.limit`, or "unknown" when it is null. Codex time is recorded separately and is not in that figure. Cost is as of the last completed turn: the CLI writes its cost record when a turn ends, so a single-turn `claude -p` run reports it as unknown.
 
 Say **done** only when the outcome is `verified`. For incomplete or failed, name the step and the reason. When the run's escalation reasons include `auth` or `payments`, or the depth was `thorough`, suggest the native `/security-review` as an optional extra, not a receipt.
 

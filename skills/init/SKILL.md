@@ -8,12 +8,15 @@ argument-hint: "[--check]"
 
 Set up this project for the Compound V cycle (brainstorm → pre-flights → plan → build → verify). Probe everything first, then show the user **one** message with the findings and every proposed change, numbered, and apply only what they approve. With `--check`, probe and report, and write nothing.
 
+**Commands.** Run each command as one plain command line with literal values (the run id, real paths): no shell variables you set yourself, no `;` or `&&` chains, no `$?`. The sandbox's auto-allow refuses compound commands.
+
 ## 1. Probes (write nothing)
 
 Run these and keep the results:
 
 ```bash
-git rev-parse --show-toplevel && git rev-parse --verify -q HEAD   # a repo with a first commit
+git rev-parse --show-toplevel                                     # a git repo
+git rev-parse --verify -q HEAD                                    # with a first commit
 python3 -c 'import sys; print(sys.version_info >= (3, 9))'      # True
 codex --version                                                   # reviewer candidate
 npx --no-install playwright --version                             # Playwright Test in this project
@@ -25,8 +28,8 @@ claude plugin list --json                                         # is superpowe
 - **Python below 3.9**: stop, and name the interpreter found.
 - **Test command**: detect one from `package.json` (`scripts.test` → `npm test`), `pyproject.toml` / `pytest.ini` (`python3 -m pytest`), a `Makefile` `test:` target (`make test`), `go.mod` (`go test ./...`) or `Cargo.toml` (`cargo test`). With none, propose none, and the plan will set one per run.
 - **Browser runner**: Playwright Test in the project, or a Playwright / Chrome DevTools MCP in `claude mcp list`. With none, the offer is `claude mcp add playwright -- npx @playwright/mcp@0.0.83 --headless`, plus a note that each web plan adds Playwright Test (`@playwright/test`) as a dev dependency for its `live_cmd`. Without a browser, a web run ends incomplete unless the user waives the check.
-- **Codex stop-review gate**: the codex plugin keeps a per-project `stopReviewGate` flag in its state file. Check it with
-  `grep -ls '"stopReviewGate": *true' ~/.claude/plugins/data/codex-*/state/"$(basename "$PWD")"-*/state.json "${TMPDIR:-/tmp}"/codex-companion/"$(basename "$PWD")"-*/state.json 2>/dev/null`.
+- **Codex stop-review gate**: the codex plugin keeps a per-project `stopReviewGate` flag in its state file. With `<name>` the last part of the repo path and `<tmp>` the output of `python3 -c 'import tempfile; print(tempfile.gettempdir())'`, check it with
+  `grep -ls '"stopReviewGate": *true' ~/.claude/plugins/data/codex-*/state/<name>-*/state.json <tmp>/codex-companion/<name>-*/state.json`.
   A hit means two Stop-time reviewers would both fire (Codex's gate and Compound V's refuse-once Stop hook). Warn, and suggest `/codex:setup --disable-review-gate` for this project.
 - **Existing files**: read `.claude/compound-v.json` and `.claude/settings.json` if they exist. Every write below is a merge into them. Never truncate either file.
 
@@ -42,6 +45,8 @@ Report the probes in a few lines, then list each proposed change with its diff, 
  "default_tier": "full",
  "reviewer": "claude",
  "test_cmd": "npm test",
+ "is_web": true,
+ "live_cmd": "npx playwright test",
  "budget_usd": 7,
  "models": {"build": "opus", "mechanical": "sonnet", "review": "opus"}}
 ```
@@ -49,6 +54,7 @@ Report the probes in a few lines, then list each proposed change with its diff, 
 - `reviewer`: `codex` when `codex --version` works and the user wants it, otherwise `claude`. The Claude reviewer is an Opus subagent, and its cost counts in the run's Claude budget. Codex runs outside it and is timed separately.
 - `stance`: `standard`, or `cost-aware` (brainstorm depth defaults to quick, and the advisor is off or Opus, never Fable).
 - `test_cmd`: the detected command, which the user confirms or corrects.
+- `is_web` and `live_cmd`, for a web project only (a dev server in `package.json`, HTML templates, a `public/` folder): `live_cmd` is the Playwright Test command when the project has it (`npx playwright test`); otherwise ask the user for the command that checks the main page in a real browser. Light runs use it when their diff touches UI. Omit both for a project with no UI.
 - `models`: the map the plan's task → model table draws from. This replaces v3's `/v:models`. Opus judges and builds, Sonnet takes mechanical work only.
 
 **② `.claude/settings.json`** (the project's native settings, merged key by key):

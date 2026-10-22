@@ -45,16 +45,15 @@ JSON
 ## GitLab (`glab`)
 
 **Resolve project + diff refs** (positions need all three SHAs):
+Take `<proj>` from `git remote get-url origin`: the path after the host, without `.git`, with every `/` written as `%2F` (`group%2Fsub%2Fproject`).
+
 ```bash
-PROJ=$(git remote get-url origin \
-  | sed -E 's#^[a-z]+://[^/]+/##; s#^[^/]+:##; s#\.git$##' \
-  | sed 's#/#%2F#g')
-glab api "projects/$PROJ/merge_requests/{n}" --jq '{base: .diff_refs.base_sha, start: .diff_refs.start_sha, head: .diff_refs.head_sha}'
+glab api "projects/<proj>/merge_requests/{n}" --jq '{base: .diff_refs.base_sha, start: .diff_refs.start_sha, head: .diff_refs.head_sha}'
 ```
 
 **Inline comment** = a discussion pinned to a diff position:
 ```bash
-glab api "projects/$PROJ/merge_requests/{n}/discussions" -X POST \
+glab api "projects/<proj>/merge_requests/{n}/discussions" -X POST \
   -f body="..." \
   -f position[position_type]=text \
   -f position[base_sha]=<base> -f position[start_sha]=<start> -f position[head_sha]=<head> \
@@ -68,7 +67,7 @@ glab api "projects/$PROJ/merge_requests/{n}/discussions" -X POST \
 **Summary** = a single MR note (no position):
 ```bash
 glab mr note {n} -m "<markdown — see body structure>"
-# or: glab api "projects/$PROJ/merge_requests/{n}/notes" -X POST -f body="..."
+# or: glab api "projects/<proj>/merge_requests/{n}/notes" -X POST -f body="..."
 ```
 GitLab has no `REQUEST_CHANGES`/`APPROVE` via this skill — convey the verdict in the note body + the title icon (Phase 8). Never run `glab mr approve`.
 

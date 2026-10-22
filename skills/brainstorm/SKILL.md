@@ -7,6 +7,8 @@ description: Use before building or changing anything non-trivial in a project s
 
 You build well, and you build what you believe the user wants. That belief is thinner than it feels. Here you find out what they actually want, and why, before any code. In our benchmark the answers collected at this stage were the cheapest depth a build got.
 
+**Commands.** Run each command as one plain command line with literal values (the run id, real paths): no shell variables you set yourself, no `;` or `&&` chains, no `$?`. The sandbox's auto-allow refuses compound commands.
+
 ## 0. Size it first
 
 - **Everything is in the request** and it is a typo, copy, wording or config value: do not brainstorm. Make the change, then run `compound-v:verify` (light run).

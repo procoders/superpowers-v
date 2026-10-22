@@ -14,7 +14,9 @@ Study an existing repository and write down what is true about it, with a citati
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v-onboard.py" <subcommand> --repo .
 ```
 
-`pack`, `verify-citations`, `scan-output`, `design-lint`, `detect-ui`, `recommend-mcp`, `recommend-autoskills`, `rules-plan`, `rules-lint`, `staleness`.
+`pack`, `verify-citations`, `scan-output`, `detect-ui`, `recommend-mcp`, `recommend-autoskills`, `rules-plan`, `rules-lint`, `staleness`. The exception is `design-lint`: it takes `--file DESIGN.md` and no `--repo`.
+
+**Commands.** Run each command as one plain command line with literal values (the run id, real paths): no shell variables you set yourself, no `;` or `&&` chains, no `$?`. The sandbox's auto-allow refuses compound commands.
 
 ## Branch on the argument
 
