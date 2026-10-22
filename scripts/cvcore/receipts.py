@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -176,9 +177,17 @@ def record_review(repo, rec, findings_file, reviewer) -> dict:
             "result": "error", "reason": "stale review", "cmd": reviewer,
             "review_snapshot": data["snapshot"]})
     if reviewer == "claude":
-        issued = [c["at"] for c in rec.get("checkouts", []) if c.get("tree") == data["snapshot"]]
+        issued = [c for c in rec.get("checkouts", []) if c.get("tree") == data["snapshot"]]
+        first = min((c["at"] for c in issued), default=None)
         stops = [s for s in rec.get("reviewer_stops", [])
-                 if not s.get("consumed") and issued and s.get("at", "") > min(issued)]
+                 if not s.get("consumed") and first and s.get("at", "") > first]
+        if not stops and issued:
+            found = _reviewer_transcript(repo, rec, issued)
+            if found:
+                rec.setdefault("reviewer_stops", []).append(
+                    {"agent_id": found[0], "agent_type": found[1], "at": _now(),
+                     "source": "transcript"})
+                stops = rec["reviewer_stops"][-1:]
     else:
         stops = [e for e in rec.get("external", {}).get("codex", [])
                  if e.get("ok") and e.get("tree") == data["snapshot"] and not e.get("consumed")]
@@ -211,6 +220,41 @@ def note_reviewer_stop(repo, rec, agent_id, agent_type) -> dict:
         {"agent_id": agent_id, "agent_type": agent_type, "at": _now()})
     run.save(repo, rec)
     return rec
+
+
+def _ts(text: str) -> datetime:
+    t = datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def _subagent_dirs(repo, rec) -> list:
+    dirs = [Path(p).with_suffix("") / "subagents" for p in (rec.get("transcripts") or {}).values()]
+    home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
+    for root in {str(repo), os.path.realpath(str(repo))}:
+        # Undocumented layout, read fail-closed: a miss only means no evidence was found.
+        dirs += sorted((home / re.sub(r"[^A-Za-z0-9-]", "-", root)).glob("*/subagents"))
+    return dirs
+
+
+def _reviewer_transcript(repo, rec, issued):
+    used = {s.get("agent_id") for s in rec.get("reviewer_stops", []) if s.get("consumed")}
+    for meta in (m for d in _subagent_dirs(repo, rec) for m in sorted(d.glob("agent-*.meta.json"))):
+        try:
+            kind = str(json.loads(meta.read_text(encoding="utf-8"))["agentType"])
+            aid = meta.name[len("agent-"):-len(".meta.json")]
+            if kind.split(":")[-1] != "reviewer" or aid in used:
+                continue
+            with open(meta.with_name(f"agent-{aid}.jsonl"), "rb") as f:
+                body = f.read(4_000_000)
+            started = _ts(json.loads(body.split(b"\n", 1)[0])["timestamp"])
+            for c in issued:
+                dest = str(c["dest"])
+                forms = {dest, dest[len("/private"):] if dest.startswith("/private/") else dest}
+                if started > _ts(c["at"]) and any(x.encode() in body for x in forms):
+                    return aid, kind
+        except (OSError, ValueError, KeyError, TypeError, IndexError):
+            continue
+    return None
 
 
 def _bound(rec, step, r) -> bool:

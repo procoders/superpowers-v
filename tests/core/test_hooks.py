@@ -289,6 +289,25 @@ class HooksTest(unittest.TestCase):
         stops = self.load(rec)["reviewer_stops"]
         self.assertEqual(["compound-v:reviewer"], [s["agent_type"] for s in stops])
 
+    def test_subagent_stop_logged(self):
+        self.start()
+        for kind in ("Explore", "compound-v:reviewer"):
+            hooks.subagent_stop_hook({"hook_event_name": "SubagentStop", "session_id": "s1",
+                                      "agent_id": "a", "agent_type": kind}, self.repo)
+        rows = [json.loads(x) for x in
+                (self.repo / "docs/compound-v/runs/triage.log").read_text().splitlines()]
+        self.assertEqual([("Explore", False), ("compound-v:reviewer", True)],
+                         [(r["agent_type"], r["recorded"]) for r in rows])
+
+    def test_harness_notices_ignored(self):
+        for text in ("<task-notification>build finished</task-notification>",
+                     "  <system-reminder>add a page</system-reminder>",
+                     "[SYSTEM NOTIFICATION] Fix the broken search", "<local-command-stdout>x"):
+            self.assertIsNone(self.prompt(text), text)
+        self.assertFalse((self.state / "change-s1").exists())
+        rows = (self.repo / "docs/compound-v/runs/triage.log").read_text()
+        self.assertEqual(4, rows.count("harness notice"))
+
     def test_guard_denies_run_record_edit(self):
         for tool, key in (("Write", "file_path"), ("Edit", "file_path"),
                           ("NotebookEdit", "notebook_path")):

@@ -27,12 +27,14 @@ Your first message has exactly two things:
 1. One line saying that if they would rather skip the questions, you will make the calls yourself and say what you chose.
 2. One open question that gets them describing a real moment ("Walk me through a customer booking today, from the first call to the visit.").
 
+**Only an explicit request to skip the questions ends them** ("skip the questions", "just build it"). "Your call", "you decide" or "keep it simple" settles **that one question**: propose something concrete, mark it as your call, and ask the next most important question. The depth question (§4) is still asked for anything bigger than a small change.
+
 When they skip: state the significant how-it-gets-made choices in one line, write the spec with every decision marked as your call, and continue from §5. Skipping removes the questions. It never removes the pre-flights, the plan or verification.
 
 ## 3. The conversation: one question per message
 
 - **Every message ends with exactly one question**: a single sentence, with no list of example answers hanging off it. The session may be headless, with the owner answering one turn at a time, so never ask two things at once and never wait on anything they cannot do from chat. Do not ask them to open a browser tab, look at a mockup, click or install anything.
-- Use the user's own vocabulary and no process jargon. When they say "you decide", propose something concrete and mark it as your call.
+- Use the user's own vocabulary and no process jargon. When they say "you decide" or "your call", propose something concrete, mark it as your call, and move to the next question; it settles that question, not the conversation.
 - A guess they can correct ("I'm guessing walk-ins matter as much as online bookings?") often beats an open question.
 - **Play back** as you go. When one part is clear, describe it back in 150–250 words, mark your guesses as guesses, and end with "What's wrong or missing here?" That is the message's one question.
 

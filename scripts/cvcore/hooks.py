@@ -127,14 +127,26 @@ def stop_hook(payload: dict, repo: Path, budget_s=6.0, state_dir=None):
 def subagent_stop_hook(payload: dict, repo: Path):
     try:
         kind = str(payload.get("agent_type") or "")
-        if payload.get("hook_event_name") != "SubagentStop" or kind.split(":")[-1] != "reviewer":
+        if payload.get("hook_event_name") != "SubagentStop":
+            return None
+        if kind.split(":")[-1] != "reviewer":
+            _event(repo, {"event": "subagent_stop", "agent_type": kind, "recorded": False})
             return None
         rec = run.active(repo, payload.get("session_id"))
         if rec is not None:
             note_reviewer_stop(repo, rec, payload.get("agent_id"), kind)
+        _event(repo, {"event": "subagent_stop", "agent_type": kind, "recorded": rec is not None})
     except Exception:
         pass
     return None
+
+
+def _event(repo, row: dict) -> None:
+    path = Path(repo) / run.RUNS / "triage.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), **row}
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row) + "\n")
 
 
 def _gaps(s: dict) -> str:
@@ -147,16 +159,16 @@ def _gaps(s: dict) -> str:
 
 
 def _log(repo, sid, tier, reason, chars) -> None:
-    path = Path(repo) / run.RUNS / "triage.log"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    row = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "session": sid,
-           "tier": tier, "reason": reason, "prompt_chars": chars}
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(row) + "\n")
+    _event(repo, {"session": sid, "tier": tier, "reason": reason, "prompt_chars": chars})
+
+
+HARNESS = ("<task-notification", "<system-reminder", "[system notification", "<local-command")
 
 
 def _filtered(text: str):
     low = text.strip().lower()
+    if low.startswith(HARNESS):
+        return "harness notice"
     if low.startswith("/"):
         return "slash command"
     if 0 < len(low) <= 200 and low.endswith("?") and not is_action(low):

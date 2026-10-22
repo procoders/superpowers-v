@@ -135,6 +135,54 @@ class ReceiptsTest(Base):
         self.assertEqual(("error", "no reviewer run recorded"), (r["result"], r["reason"]))
         self.assertTrue(self.reload()["reviewer_stops"][0]["consumed"])
 
+    def subagent(self, base, aid="abc", kind="compound-v:reviewer", started=None, text=None):
+        import time
+        from datetime import datetime, timezone
+        time.sleep(0.005)
+        sub = Path(base) / "subagents"
+        sub.mkdir(parents=True, exist_ok=True)
+        (sub / f"agent-{aid}.meta.json").write_text(
+            kind if kind.startswith("{") else json.dumps({"agentType": kind, "finished": True}))
+        stamp = started or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        body = text if text is not None else f"CHECKOUT={self.tmp / 'co'}/tree"
+        (sub / f"agent-{aid}.jsonl").write_text(json.dumps(
+            {"type": "user", "timestamp": stamp, "message": {"content": body}}) + "\n")
+
+    def test_reviewer_found_in_subagent_transcript(self):
+        self.steps()
+        rec = self.reload()
+        rec["transcripts"] = {"s1": str(self.tmp / "proj/s1.jsonl")}
+        run.save(self.repo, rec)
+        receipts.note_checkout(self.repo, self.reload(), snapshot.tree(self.repo), self.tmp / "co")
+        self.subagent(self.tmp / "proj/s1", aid="old", started="2020-01-01T00:00:00.000Z")
+        self.subagent(self.tmp / "proj/s1", aid="other", text="no checkout path here")
+        self.subagent(self.tmp / "proj/s1", aid="explore", kind="Explore")
+        self.subagent(self.tmp / "proj/s1", aid="broken", kind="{not json")
+        r = self.review(checkout=False, stop=False)
+        self.assertEqual("error", r["result"])
+        self.subagent(self.tmp / "proj/s1", aid="good")
+        r = self.review(checkout=False, stop=False)
+        self.assertEqual("pass", r["result"], r)
+        stops = self.reload()["reviewer_stops"]
+        self.assertEqual([("good", True, "transcript")],
+                         [(s["agent_id"], s["consumed"], s["source"]) for s in stops])
+
+    def test_reviewer_found_via_projects_dir(self):
+        import os
+        self.steps()
+        cfg = self.tmp / "cfg"
+        os.environ["CLAUDE_CONFIG_DIR"] = str(cfg)
+        try:
+            receipts.note_checkout(self.repo, self.reload(), snapshot.tree(self.repo),
+                                   self.tmp / "co")
+            import re
+            proj = cfg / "projects" / re.sub(r"[^A-Za-z0-9-]", "-", str(self.repo)) / "sess"
+            self.subagent(proj, aid="r1")
+            self.assertEqual("pass", self.review(checkout=False, stop=False)["result"])
+            self.assertEqual("error", self.review(checkout=False, stop=False)["result"])
+        finally:
+            del os.environ["CLAUDE_CONFIG_DIR"]
+
     def test_codex_reviewer_not_recordable_from_cli(self):
         f = self.tmp / "forged.json"
         f.write_text(json.dumps({"snapshot": snapshot.tree(self.repo), "summary": "x",
