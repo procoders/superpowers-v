@@ -63,7 +63,8 @@ Budget: at most 20 turns. Run them in this order:
    identity collide (stop at the first bypass); names in any script, with joiners, are accepted; visible and query-driven
    notices match the stored state.
 9. Cross-user access (judgement): as user A, read and change B's objects by id; send extra fields; call operator routes
-   as a lower role and unauthenticated.
+   as a lower role and unauthenticated. Then change A's role, team or manager (or end a delegation, or deactivate A),
+   log in afresh and retry everything A could do before. Check every total with two users who share a display name.
 </probes>
 
 <skip>

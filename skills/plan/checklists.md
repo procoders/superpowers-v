@@ -34,7 +34,8 @@ criterion. Evidence and the full mapping: `docs/compound-v/preflight/2026-10-22-
   choice), yields exactly one result, also under concurrency; an operation commits whole or not at all. Use a one-time
   token per rendered form. *A 2.3.3, 2.3.4, 15.4.2; Idempotency-Key draft*
 - **D4** Identifiers (email, phone, username, codes) are canonicalised once: a valid value is stored unchanged in meaning,
-  and two spellings of one identity collide. *A 1.1.1*
+  and two spellings of one identity collide. Group, join and total by stable ids, never by display fields (two people
+  with the same name stay two). *A 1.1.1*
 - **D5** Times: instants in UTC; a future local event as wall time plus an IANA zone id; rows for DST gaps and overlaps
   wherever a rule crosses one. *W3C time-zone note; RFC 9557*
 
@@ -49,7 +50,9 @@ criterion. Evidence and the full mapping: `docs/compound-v/preflight/2026-10-22-
 - **S1** Fails closed: no default, example or placeholder secret, account or contact detail works in production, which
   refuses to start without real ones. Debug off. *A 13.2.3, 6.3.2, 15.2.3, 13.4.2, 16.5.3*
 - **S2** Authorization is checked server-side on every object, field and function: deny by default; one user can never read
-  or change another's records by id; only allow-listed fields are writable. *A 8.2.1–8.2.3, 15.3.3; API1, API3, API5*
+  or change another's records by id; only allow-listed fields are writable. Permissions are computed from the current
+  state on every request, never from stored grants: a change of role, team, manager or delegation, or a deactivation,
+  takes effect at once (its sessions and derived access are revoked). *A 8.2.1–8.2.3, 15.3.3; API1, API3, API5*
 - **S3** Sessions: a new id at login; server-side invalidation on logout, credential change and account disable; idle and
   absolute timeouts; `Secure`, `HttpOnly`, `SameSite` cookies. *A 7.2.4, 7.3.1, 7.3.2, 7.4.1–7.4.3, 3.3.1–3.3.4*
 - **S4** Safe methods (GET, HEAD, OPTIONS) never change state. An unsupported method gets 405 (or 501), never a 500.
