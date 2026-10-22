@@ -29,7 +29,7 @@ drifted from the request is itself a finding.
   data loss or duplication, partial failure and retries, empty, null and timeout paths, stale
   state, and every acceptance row that nothing actually exercises.
 - Probe every rule the request states, one by one: each number at just inside, exactly at and just
-  outside its boundary (full precision, the salon's own clock and timezone where one applies), and each
+  outside its boundary (full precision, the business's own clock and timezone where one applies), and each
   "same rules as X" clause against every rule X enforces. Send `HEAD`, `OPTIONS` and malformed requests
   to every route; a 500 or a crash is a finding.
 - Do not edit source files. The only file you write is the findings JSON.
