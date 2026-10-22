@@ -5,13 +5,13 @@ import os
 import re
 
 from .gitio import git, zsplit
-from .snapshot import CANON, excludes, worktree_roots
+from .snapshot import CANON, excludes, unhashed
 
-EVIDENCE = "docs/compound-v"
+DOCS = ":(exclude,glob)docs/compound-v/**/*.md"
 
 
 def skipped(repo) -> list:
-    return [f":(exclude){EVIDENCE}", *excludes(worktree_roots(repo))]
+    return [DOCS, *excludes(unhashed(repo))]
 
 
 def _braces(glob: str) -> list:

@@ -18,7 +18,7 @@ newrepo() {
 test_hooks_silent_outside_git() {
   local d="$T/plain" out rc
   mkdir -p "$d"
-  for pair in stop:Stop prompt:UserPromptSubmit session:SessionStart guard:PreToolUse; do
+  for pair in stop:Stop prompt:UserPromptSubmit session:SessionStart guard:PreToolUse subagent:SubagentStop; do
     out="$(cd "$d" && payload "${pair#*:}" "$d" | "$ROOT/hooks/${pair%%:*}.sh")"; rc=$?
     check "silent outside git: ${pair%%:*}" "$rc:$out" "0:"
   done

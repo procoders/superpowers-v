@@ -49,10 +49,13 @@ class ScopeTest(unittest.TestCase):
         self.assertEqual(["docs/বুকিং নোট.md"], r["changed"])
 
     def test_scope_evidence_exempt(self):
-        helpers.write(self.repo, {"docs/compound-v/runs/r.json": "{}"})
+        rec = "docs/compound-v/runs/20261022-101500-x.json"
+        helpers.write(self.repo, {rec: "{}", "docs/compound-v/plans/p.md": "plan\n"})
         helpers.commit_all(self.repo)
-        helpers.write(self.repo, {"docs/compound-v/runs/r.json": "{\"x\": 1}"})
-        self.assertNotIn("docs/compound-v/runs/r.json", scope.changed(self.repo, self.base))
+        helpers.write(self.repo, {rec: "{\"x\": 1}", "docs/compound-v/specs/s.md": "spec\n",
+                                  "docs/compound-v/runs/runtime.py": "v = 0\n"})
+        self.assertEqual(["docs/compound-v/runs/runtime.py"],
+                         scope.check(self.repo, self.base, ["src/**"])["violations"])
 
     def test_scope_rename_and_delete_both_sides(self):
         (self.repo / "lib").mkdir()
