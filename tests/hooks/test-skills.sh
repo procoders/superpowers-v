@@ -54,6 +54,8 @@ check "builder attaches its own plan"       "$(has agents/builder.md 'run plan -
 check "reviewer is capped at 25 turns"      "$(has agents/reviewer.md 'maxTurns: 25')"
 check "review prompt has the probe list"     "$(has skills/verify/review-prompt.md '<probes>')"
 check "review prompt has the skip list"      "$(has skills/verify/review-prompt.md '<skip>')"
+check "brainstorm asks the parallel question" "$(has skills/brainstorm/SKILL.md 'May I build independent parts in parallel')"
+check "builder gates Workflow on Parallel: yes" "$(has agents/builder.md 'Parallel: yes (owner)')"
 
 check "lint-frontmatter selftest passes" \
   "$(python3 "$REPO/scripts/lint-frontmatter.py" --selftest >/dev/null 2>&1 && echo 1 || echo 0)"

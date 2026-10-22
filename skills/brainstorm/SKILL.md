@@ -54,6 +54,8 @@ product and users · data lifecycle (create / change / retire with history / del
 
 When `.claude/compound-v.json` says `"stance": "cost-aware"`, suggest quick. Depth adds questions and checks. It never removes the full tier's minimum: tests, executable review, real-world check and scope check.
 
+**Parallel work.** When the depth is `thorough`, or the work is large with clearly independent parts, ask one short question: "May I build independent parts in parallel (Claude Code's Workflow tool, several agents at once)?" Record the answer in the spec as a `Parallel:` line, `yes (owner)` or `no (owner)`. Not asked means `Parallel: no`.
+
 Stop asking when every area is covered (answered, marked as your call, or n.a. with a reason).
 
 **What "your call" and "keep it simple" mean.** Choose what a real operator needs day to day, built simply: fewer
@@ -72,6 +74,7 @@ Write `docs/compound-v/specs/YYYY-MM-DD-<topic>.md`, so that a talented builder 
 - **Decided by the owner**, as they decided it. **My calls**, each marked.
 - Data lifecycle per entity; jurisdiction, data and deployment; security and every form; operations; edge cases.
 - Out of scope (agreed), and what is left to the builder.
+- `Parallel: yes (owner)`, `Parallel: no (owner)`, or `Parallel: no` when it was not asked.
 
 Then start the run. Pass the user's **original request** on stdin, never a temp file inside the repo (an untracked file there is a scope violation):
 

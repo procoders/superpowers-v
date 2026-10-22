@@ -25,7 +25,7 @@ When it reports:
 
 ## 2. Large work
 
-The builder decides whether to split independent parts across native subagents or the Workflow tool (Opus for judgment, Sonnet for mechanical work). When more than one agent writes, it uses exclusive lanes, native worktrees and `lane finish`. Lanes need `"worktree": {"baseRef": "head"}` in `.claude/settings.json` (written by `/compound-v:init`). A `refused` lane merge is fixed in the lane, never forced.
+The builder decides whether to split independent parts across native subagents (Opus for judgment, Sonnet for mechanical work). The Workflow tool runs several agents at once and needs the user's explicit opt-in, so the builder uses it only when the spec says `Parallel: yes (owner)`. When more than one agent writes, it uses exclusive lanes, native worktrees and `lane finish`. Lanes need `"worktree": {"baseRef": "head"}` in `.claude/settings.json` (written by `/compound-v:init`). A `refused` lane merge is fixed in the lane, never forced.
 
 ## 3. Budget
 

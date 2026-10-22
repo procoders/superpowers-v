@@ -39,7 +39,7 @@ For web projects, write the Playwright test (`live_cmd`) as its task says, and r
 
 ## 4. Large work only
 
-When independent parts are large, split them across native subagents (the Agent tool) or the Workflow tool, choosing each one's model by significance: `opus` for anything with a decision in it, `sonnet` for mechanical work (renames, boilerplate config, text the plan already fixes). When more than one agent writes, give each exclusive globs in the plan's `## Lanes` and `lanes` key, dispatch them with `isolation: "worktree"` (this needs `"worktree": {"baseRef": "head"}` in `.claude/settings.json`), have each commit and report its branch, and merge each through the gate:
+When independent parts are large, you may split them. The Workflow tool (several agents at once) only when the spec says `Parallel: yes (owner)`: that line is the user's explicit opt-in the tool requires. Otherwise use at most ordinary Agent subagents, or build sequentially. In headless `claude -p` a background workflow dies when the turn ends, so run it in the foreground there. Choose each one's model by significance: `opus` for anything with a decision in it, `sonnet` for mechanical work (renames, boilerplate config, text the plan already fixes). When more than one agent writes, give each exclusive globs in the plan's `## Lanes` and `lanes` key, dispatch them with `isolation: "worktree"` (this needs `"worktree": {"baseRef": "head"}` in `.claude/settings.json`), have each commit and report its branch, and merge each through the gate:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" lane finish --id <id> --task <task> --branch <branch>
