@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import escalate, run, scope, snapshot
+from . import escalate, receipts, review, run, scope, snapshot
 from .gitio import GitError, repo_root
 
 
@@ -68,6 +68,42 @@ def cmd_classify_request(a, repo):
         _out({"tier": escalate.classify_request(src.read())})
 
 
+def cmd_receipt(a, repo):
+    r = receipts.run_step(repo, _pick(repo, a), a.step)
+    _out(r)
+    return 0 if r["result"] == "pass" else 1
+
+
+def cmd_review(a, repo):
+    rec = _pick(repo, a)
+    if a.action == "codex" and a.plan:
+        out = a.out or str(Path(repo) / run.RUNS / f"{rec['id']}-plan-review.json")
+        _out({"plan_review": str(review.codex_plan(repo, a.plan, out, model=a.model,
+                                                    request=rec.get("request") or ""))})
+        return 0
+    if a.action == "codex":
+        out = receipts.findings_path(repo, rec, rec["review_round"] + 1)
+        findings = review.codex(repo, rec, out, model=a.model, timeout_s=a.timeout)
+        r = receipts.record_review(repo, run.load(repo, rec["id"]), findings, "codex")
+    else:
+        r = receipts.record_review(repo, rec, a.findings, a.reviewer)
+    _out(r)
+    return 0 if r["result"] == "pass" else 1
+
+
+def cmd_waive(a, repo):
+    _out(receipts.waive(repo, _pick(repo, a), a.step, a.reason))
+
+
+STATUS_RC = {"verified": 0, "pending": 3, "incomplete": 4, "failed": 5}
+
+
+def cmd_status(a, repo):
+    s = receipts.status(repo, _pick(repo, a))
+    _out(s)
+    return STATUS_RC[s["outcome"]]
+
+
 def parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--repo", default=".")
@@ -103,10 +139,29 @@ def parser() -> argparse.ArgumentParser:
     cr = sub.add_parser("classify-request", parents=[common])
     cr.add_argument("--text-file")
     cr.set_defaults(fn=cmd_classify_request)
+    rc = sub.add_parser("receipt", parents=[withid])
+    rc.add_argument("step", choices=("tests", "live", "scope"))
+    rc.set_defaults(fn=cmd_receipt)
+    rv = sub.add_parser("review").add_subparsers(dest="action", required=True)
+    co = rv.add_parser("codex", parents=[withid])
+    co.add_argument("--model", default=review.MODEL)
+    co.add_argument("--timeout", type=int, default=1200)
+    co.add_argument("--plan")
+    co.add_argument("--out")
+    rr = rv.add_parser("record", parents=[withid])
+    rr.add_argument("--findings", required=True)
+    rr.add_argument("--reviewer", required=True, choices=("codex", "claude"))
+    for x in (co, rr):
+        x.set_defaults(fn=cmd_review)
+    wv = sub.add_parser("waive", parents=[withid])
+    wv.add_argument("--step", required=True)
+    wv.add_argument("--reason", required=True)
+    wv.set_defaults(fn=cmd_waive)
+    sub.add_parser("status", parents=[withid]).set_defaults(fn=cmd_status)
     return p
 
 
-ERRORS = (GitError, run.RunError, snapshot.SnapshotError, OSError, ValueError)
+ERRORS = (GitError, run.RunError, review.ReviewError, snapshot.SnapshotError, OSError, ValueError)
 
 
 def main(argv=None) -> int:
