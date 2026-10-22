@@ -57,6 +57,12 @@ def cmd_run(a, repo):
         rec = run.bind(repo, _pick(repo, argparse.Namespace(id=a.id)), a.session)
     else:
         rec = _pick(repo, a)
+        if a.brief:
+            print(f"{rec['id']} · stage {rec['stage']} ({rec['tier']}) · outcome "
+                  f"{rec['outcome'] or 'open'} · plan {rec.get('plan') or 'none'} · test_cmd "
+                  f"{rec.get('test_cmd') or 'none'} · live_cmd {rec.get('live_cmd') or 'none'} · "
+                  f"reviewer {rec.get('reviewer') or 'claude'} · review round {rec['review_round']}")
+            return 0
     _out(rec)
 
 
@@ -78,10 +84,33 @@ def cmd_classify_request(a, repo):
         _out({"tier": escalate.classify_request(src.read())})
 
 
+def _say(a, r: dict, line: str) -> int:
+    if getattr(a, "json", False):
+        _out(r)
+    else:
+        print(line)
+    return 0 if r["result"] == "pass" else 1
+
+
+def _receipt_line(r: dict) -> str:
+    head = f"{r['step']}: {r['result']} (exit {r.get('exit')}, {r.get('duration_s') or 0}s)"
+    if r["result"] == "pass":
+        return head
+    lines = [head + (f" — {r['reason']}" if r.get("reason") else "")]
+    return "\n".join(lines + ["  " + x for x in (r.get("tail") or "").splitlines()[-5:]])
+
+
+def _review_line(r: dict) -> str:
+    if r["result"] == "error":
+        return f"review: error — {r.get('reason')}"
+    found = r.get("findings") or []
+    return (f"review round {r['round']}: {r['result']} ({len(r.get('open') or [])} blocker/high "
+            f"of {len(found)} findings) {r.get('findings_file')}")
+
+
 def cmd_receipt(a, repo):
     r = receipts.run_step(repo, _pick(repo, a), a.step)
-    _out(r)
-    return 0 if r["result"] == "pass" else 1
+    return _say(a, r, _receipt_line(r))
 
 
 def cmd_review(a, repo):
@@ -97,8 +126,7 @@ def cmd_review(a, repo):
         r = receipts.record_review(repo, run.load(repo, rec["id"]), findings, "codex")
     else:
         r = receipts.record_review(repo, rec, a.findings, a.reviewer)
-    _out(r)
-    return 0 if r["result"] == "pass" else 1
+    return _say(a, r, _review_line(r))
 
 
 def cmd_waive(a, repo):
@@ -110,7 +138,7 @@ STATUS_RC = {"verified": 0, "pending": 3, "incomplete": 4, "failed": 5}
 
 def cmd_status(a, repo):
     s = receipts.status(repo, _pick(repo, a))
-    _out(s)
+    print(json.dumps(s, ensure_ascii=False, separators=(",", ":")))
     return STATUS_RC[s["outcome"]]
 
 
@@ -159,7 +187,7 @@ def parser() -> argparse.ArgumentParser:
     r.add_parser("stage", parents=[withid]).add_argument("--to", required=True,
                                                          choices=run.STAGES)
     r.add_parser("plan", parents=[withid]).add_argument("--plan", required=True)
-    r.add_parser("show", parents=[withid])
+    r.add_parser("show", parents=[withid]).add_argument("--brief", action="store_true")
     r.add_parser("bind", parents=[withid]).add_argument("--session", required=True)
     for name in ("start", "stage", "plan", "show", "bind"):
         r.choices[name].set_defaults(fn=cmd_run)
@@ -174,10 +202,12 @@ def parser() -> argparse.ArgumentParser:
     cr.add_argument("--text-file")
     cr.set_defaults(fn=cmd_classify_request)
     rc = sub.add_parser("receipt", parents=[withid])
+    rc.add_argument("--json", action="store_true")
     rc.add_argument("step", choices=("tests", "live", "scope"))
     rc.set_defaults(fn=cmd_receipt)
     rv = sub.add_parser("review").add_subparsers(dest="action", required=True)
     co = rv.add_parser("codex", parents=[withid])
+    co.add_argument("--json", action="store_true")
     co.add_argument("--model", default=review.MODEL)
     co.add_argument("--timeout", type=int, default=1200)
     cp = rv.add_parser("codex-plan", parents=[withid])
@@ -185,6 +215,7 @@ def parser() -> argparse.ArgumentParser:
     cp.add_argument("--out")
     cp.add_argument("--model", default=review.MODEL)
     rr = rv.add_parser("record", parents=[withid])
+    rr.add_argument("--json", action="store_true")
     rr.add_argument("--findings", required=True)
     rr.add_argument("--reviewer", required=True, choices=("claude",))
     for x in (co, cp, rr):

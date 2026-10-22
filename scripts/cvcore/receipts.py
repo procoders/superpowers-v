@@ -89,14 +89,27 @@ def required(rec, repo) -> list:
     return ["tests", "scope"] + (["live"] if diff["touches_ui"] else [])
 
 
-def _tail(*paths) -> str:
-    lines = []
+SANDBOX_SIGNS = re.compile(
+    r"bootstrap_check_in|Permission denied \(1100\)|failed to copy trust settings|listen EPERM"
+    r"|(socket|bind|listen|connect|launch|spawn)[^\n]{0,80}Operation not permitted"
+    r"|Operation not permitted[^\n]{0,80}(socket|bind|listen|launch|spawn)", re.I)
+SANDBOX_REASON = ("the command could not start inside the sandbox — run `compound-v.py receipt "
+                  "{step} --id {id}` alone, with no pipe, redirect or chain "
+                  "(sandbox.excludedCommands only matches a bare call)")
+
+
+def _read(*paths) -> str:
+    text = []
     for p in paths:
         try:
-            lines += Path(p).read_text(encoding="utf-8", errors="replace").splitlines()
+            text.append(Path(p).read_text(encoding="utf-8", errors="replace"))
         except OSError:
             pass
-    return "\n".join(line[:300] for line in lines[-20:])
+    return "\n".join(text)
+
+
+def _tail(text: str) -> str:
+    return "\n".join(line[:300] for line in text.splitlines()[-20:])
 
 
 def execute(cmd, cwd, timeout_s, stdin_file=None):
@@ -110,7 +123,8 @@ def execute(cmd, cwd, timeout_s, stdin_file=None):
                             "--cwd", str(cwd), "--stdout", out, "--stderr", err,
                             "--max-output-bytes", "1000000", "--", *argv],
                            stdin=subprocess.DEVNULL)
-        return p.returncode, _tail(out, err), round(time.monotonic() - t0, 3)
+        text = _read(out, err)
+        return p.returncode, _tail(text), round(time.monotonic() - t0, 3), text
 
 
 def run_step(repo, rec, step) -> dict:
@@ -130,11 +144,13 @@ def run_step(repo, rec, step) -> dict:
     cmd = rec.get(key)
     if not cmd:
         return _store(repo, rec, step, cur, {"result": "error", "reason": f"no {key}"})
-    rc, tail, dur = execute(cmd, repo, rec.get("timeout_s") or run.TIMEOUT_S)
+    rc, tail, dur, text = execute(cmd, repo, rec.get("timeout_s") or run.TIMEOUT_S)
     fields = {"exit": rc, "cmd": cmd, "duration_s": dur, "tail": tail,
               "result": "pass" if rc == 0 else "fail"}
     if rc in (124, 127):
         fields.update(result="error", reason="timeout" if rc == 124 else "command not found")
+    elif rc != 0 and SANDBOX_SIGNS.search(text):
+        fields.update(result="error", reason=SANDBOX_REASON.format(step=step, id=rec["id"]))
     elif tree(repo) != cur["snapshot"]:
         fields.update(result="error",
                       reason="the step changed the working tree; gitignore what it writes")

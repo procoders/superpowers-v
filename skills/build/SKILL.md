@@ -7,7 +7,7 @@ description: Use when a Compound V run has an attached plan and is at stage buil
 
 Claude Code builds natively. This skill sets who builds, what a good build does, and the few commands that keep it honest. All `compound-v.py` calls are `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" …` with `--id <id>`.
 
-**Commands.** Run each command as one plain command line with literal values (the run id, real paths): no shell variables you set yourself, no `;` or `&&` chains, no `$?`. The sandbox's auto-allow refuses compound commands.
+**Commands.** Run each command as one plain command line with literal values (the run id, real paths): no shell variables you set yourself, no `;` or `&&` chains, no `$?`, and no pipes or redirects (`|`, `>`, `2>&1`): the one exception is the `<<'REQUEST'` heredoc that hands `run start` its request. The sandbox's auto-allow refuses compound commands, and `sandbox.excludedCommands` only matches a bare call.
 
 ## 0. Start
 

@@ -90,7 +90,7 @@ def _codex(cwd, out_path: Path, prompt_text: str, sandbox: str, model, timeout_s
                 "--ephemeral", "--output-schema", str(SCHEMA), "-o", str(out_path)]
         if sandbox == "workspace-write":
             argv += ["-c", "sandbox_workspace_write.network_access=false"]
-        rc, tail, _ = execute(argv + ["-m", model, "-"], cwd, timeout_s, stdin_file=pf)
+        rc, tail, *_ = execute(argv + ["-m", model, "-"], cwd, timeout_s, stdin_file=pf)
     if rc != 0:
         raise ReviewError(f"codex exited {rc}: {tail.splitlines()[-1] if tail else ''}")
     try:
@@ -118,7 +118,7 @@ def codex(repo, rec, out_path, *, model=MODEL, timeout_s=1200) -> Path:
             except SnapshotError as e:
                 raise ReviewError(str(e)) from None
             if rec.get("setup_cmd"):
-                rc, tail, _ = execute(rec["setup_cmd"], dest, timeout_s)
+                rc, tail, *_ = execute(rec["setup_cmd"], dest, timeout_s)
                 if rc != 0:
                     raise ReviewError(f"setup_cmd exited {rc}: {tail[-300:]}")
             _unchanged(repo, tid, dest)

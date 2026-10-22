@@ -67,7 +67,7 @@ def finish(repo, rec, task, branch) -> dict:
     except GitError:
         _abort(repo)
         return _refuse(repo, rec, task, branch, "conflict")
-    rc, tail, _ = execute(rec["test_cmd"], repo, rec.get("timeout_s") or run.TIMEOUT_S)
+    rc, tail, *_ = execute(rec["test_cmd"], repo, rec.get("timeout_s") or run.TIMEOUT_S)
     if rc != 0:
         _abort(repo)
         return _refuse(repo, rec, task, branch, "tests failed")

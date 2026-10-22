@@ -9,7 +9,7 @@ A plan is the set of decisions a builder cannot make alone: which files, which b
 
 All `compound-v.py` calls below are `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" …` with the run's `--id <id>` (the session brief prints it as `Compound V run <id>` if you lost it).
 
-**Commands.** Run each command as one plain command line with literal values (the run id, real paths): no shell variables you set yourself, no `;` or `&&` chains, no `$?`. The sandbox's auto-allow refuses compound commands.
+**Commands.** Run each command as one plain command line with literal values (the run id, real paths): no shell variables you set yourself, no `;` or `&&` chains, no `$?`, and no pipes or redirects (`|`, `>`, `2>&1`): the one exception is the `<<'REQUEST'` heredoc that hands `run start` its request. The sandbox's auto-allow refuses compound commands, and `sandbox.excludedCommands` only matches a bare call.
 
 ## 0. Inputs
 

@@ -7,7 +7,7 @@ description: Compound V verification (not the native /verify). Use when a Compou
 
 The CLI is the authority here, not you. Each step runs a real command and writes a signed receipt bound to the exact working tree. An edit after a receipt makes it stale. You run the steps, fix what fails, and report what the CLI says. All calls are `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" … --id <id>`.
 
-**Commands.** Run each command as one plain command line with literal values (the run id, real paths): no shell variables you set yourself, no `;` or `&&` chains, no `$?`. The sandbox's auto-allow refuses compound commands.
+**Commands.** Run each command as one plain command line with literal values (the run id, real paths): no shell variables you set yourself, no `;` or `&&` chains, no `$?`, and no pipes or redirects (`|`, `>`, `2>&1`): the one exception is the `<<'REQUEST'` heredoc that hands `run start` its request. The sandbox's auto-allow refuses compound commands, and `sandbox.excludedCommands` only matches a bare call.
 
 ## 0. Find or start the run
 
@@ -34,11 +34,12 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" receipt live  --id <id>   
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" receipt scope --id <id>
 ```
 
-Each one prints its receipt: `result` is `pass`, `fail` or `error`, followed by the command's exit code and the last lines of its output.
+Each one prints one line (`step: result (exit, duration)`), plus the reason and the last 5 output lines on a fail or error; `--json` gives the full receipt. Run each receipt command bare: a pipe or redirect keeps the call inside the sandbox, where a browser cannot start, and the CLI then records `error` ("could not start inside the sandbox"), never a pass.
 - **fail**: fix the cause (§3), then run all the steps again. A fix changes the tree, so the earlier receipts are stale.
 - **scope fail**: a file outside `change_set` (or outside its lane) changed. Revert it, or, when it belongs to the work, add its glob in the plan block and rerun `run plan`. Never hide a write.
 - **error, "gitignore what it writes"**: the command left a non-ignored file behind (a report, a test database, coverage). Add it to `.gitignore`, delete the stray output, and rerun the steps.
 - **tests fail with `tests removed`**: a test that existed when the plan was attached is gone. Restore it.
+- **error, "could not start inside the sandbox"**: rerun that receipt command exactly as shown above, alone. It is not a product failure.
 - **live error, browser cannot run** (no browser binary, no display, sandbox): ask the user once whether to waive the browser check, saying what will not have been checked. Only on their yes: `compound-v.py waive live --id <id> --reason "<their words>"`. A failing browser test is a failure, never a reason to waive.
 
 ## 2. Executable review (full runs)

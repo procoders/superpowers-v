@@ -314,6 +314,57 @@ class ReceiptsTest(Base):
         s = self.status()
         self.assertEqual(["tests", "review", "live", "scope"], s["stale"])
 
+    def test_sandbox_launch_failure_is_error(self):
+        rec = self.reload()
+        noise = "\\n".join(f"line {i}" for i in range(40))
+        rec["live_cmd"] = ("python3 -c \"import sys; sys.stderr.write('[0101/x] failed to copy trust "
+                           "settings\\n" + noise + "\\n'); sys.exit(1)\"")
+        run.save(self.repo, rec)
+        r = receipts.run_step(self.repo, self.reload(), "live")
+        self.assertEqual("error", r["result"])
+        self.assertIn("could not start inside the sandbox", r["reason"])
+        self.assertIn(f"receipt live --id {rec['id']}", r["reason"])
+        s = self.status()
+        self.assertEqual((["live"], []), (s["errors"], s["failed"]))
+        self.assertEqual("incomplete", s["outcome"])
+        rec["live_cmd"] = "python3 -c \"import sys; print('assertion failed'); sys.exit(1)\""
+        run.save(self.repo, rec)
+        self.assertEqual("fail", receipts.run_step(self.repo, self.reload(), "live")["result"])
+
+    def test_cli_output_is_terse(self):
+        r = helpers.cli(self.repo, "receipt", "tests")
+        self.assertEqual(0, r.returncode, r.stderr)
+        self.assertEqual(1, len(r.stdout.strip().splitlines()), r.stdout)
+        self.assertTrue(r.stdout.startswith("tests: pass (exit 0, "), r.stdout)
+        r = helpers.cli(self.repo, "receipt", "scope", "--json")
+        self.assertEqual("pass", json.loads(r.stdout)["result"])
+        rec = self.reload()
+        rec["live_cmd"] = "python3 -c \"import sys; print('\\n'.join(map(str, range(30)))); sys.exit(1)\""
+        run.save(self.repo, rec)
+        r = helpers.cli(self.repo, "receipt", "live")
+        self.assertEqual(1, r.returncode)
+        lines = r.stdout.strip().splitlines()
+        self.assertTrue(lines[0].startswith("live: fail (exit 1, "), lines)
+        self.assertEqual(["  25", "  26", "  27", "  28", "  29"], lines[1:])
+        r = helpers.cli(self.repo, "status")
+        self.assertEqual(1, len(r.stdout.strip().splitlines()))
+        self.assertNotIn("tail", json.loads(r.stdout))
+        r = helpers.cli(self.repo, "run", "show", "--brief")
+        self.assertEqual(1, len(r.stdout.strip().splitlines()))
+        self.assertIn(f"{rec['id']} · stage brainstorm (full)", r.stdout)
+
+    def test_cli_review_record_is_terse(self):
+        receipts.note_checkout(self.repo, self.reload(), snapshot.tree(self.repo), self.tmp / "co")
+        receipts.note_reviewer_stop(self.repo, self.reload(), "a1", "compound-v:reviewer")
+        f = self.tmp / "f.json"
+        f.write_text(json.dumps({"snapshot": snapshot.tree(self.repo), "summary": "ok",
+                                 "findings": []}))
+        r = helpers.cli(self.repo, "review", "record", "--findings", str(f), "--reviewer", "claude")
+        self.assertEqual(0, r.returncode, r.stderr)
+        self.assertEqual(
+            f"review round 1: pass (0 blocker/high of 0 findings) "
+            f"docs/compound-v/runs/{self.rec['id']}-review-1.json", r.stdout.strip())
+
     def test_cli_status_exit_codes(self):
         r = helpers.cli(self.repo, "status")
         self.assertEqual(3, r.returncode, r.stderr)

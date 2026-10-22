@@ -5,7 +5,7 @@ description: Use when the user wants to deeply review a pull/merge request or a 
 
 # PR Review — Two-Axis, Stack-Agnostic Deep Code Review
 
-**Commands.** Run each command as one plain command line with literal values (real refs and paths): no shell variables you set yourself, no `;` or `&&` chains, no `$?`. The sandbox's auto-allow refuses compound commands.
+**Commands.** Run each command as one plain command line with literal values (real refs and paths): no shell variables you set yourself, no `;` or `&&` chains, no `$?`, and no pipes or redirects (`|`, `>`, `2>&1`): the one exception is the `<<'REQUEST'` heredoc that hands `run start` its request. The sandbox's auto-allow refuses compound commands, and `sandbox.excludedCommands` only matches a bare call.
 
 ## Philosophy
 
