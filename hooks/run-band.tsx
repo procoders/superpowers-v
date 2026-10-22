@@ -1,111 +1,62 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Band, HudJob, HudRun, Live, Quota } from '../types'
-
-// Compound V run band. Everything it prints was read off disk by the plugin's own
-// readers: statuses from state.json and backend/tier from manifest.yaml (via
-// `compound-v-dashboard.py hud`), liveness and idle seconds from
-// `compound-v-liveness.py`. No percent, no ETA: neither is measured.
+import type { Band, Hud, Quota, StepMark } from '../types'
 
 const band = atom({ plugin: 'superpowers-v', key: 'band' } as const, null)
-const spin = atom({ plugin: 'superpowers-v', key: 'spin' } as const, 0)
 
 const TICK_MS = 5_000
-const IDLE_POLL_EVERY = 6 // ticks: with no run tracked, ask the reader every 30 s
-const LIVENESS_MS = 30_000
-const CLOSING_MS = 60_000
+const IDLE_MS = 30_000
 const READER_TIMEOUT_MS = 8_000
-const LIVENESS_TIMEOUT_MS = 15_000
-const STALLED = ['STALE', 'DEAD']
-const SPIN_MS = 500
-const SPIN_FRAMES = ['◐', '◓', '◑', '◒']
-const TABLE_MAX_JOBS = 8 // more than this and the band falls back to one line per wave
+const MAX_ROUNDS = 2
+const RUNS = 'docs/compound-v/runs'
 
-// The amiainative.dev palette (its CSS custom properties), one meaning each.
+// The amiainative.dev palette, one meaning each.
 const C = {
-  brand: '#DC02DF', // --color-magenta: the V mark
-  run: '#1195F2', // --color-blue: running
-  done: '#34D399', // --color-emerald: done
-  warn: '#FFC53D', // the site's amber: five minutes without progress
-  bad: '#FB2C36', // --color-red-500: stalled, dead, blocked
-  route: '#6565F2', // --color-violet: the backend a job runs on
-  idle: '#575868', // --color-slate: queued
+  brand: '#DC02DF',
+  pass: '#34D399',
+  warn: '#FFC53D',
+  bad: '#FB2C36',
+  idle: '#575868',
+  waived: '#6565F2',
 }
-const GLYPH_WIDTH = 2
-const BACKEND_WIDTH = 12 // "antigravity" + 1
 
-const EMPTY: Band = { run: null, live: null, alerted: [], quota: [], closing: null, error: null }
+const MARK: Record<StepMark, { glyph: string; color: string }> = {
+  pass: { glyph: '●', color: C.pass },
+  missing: { glyph: '○', color: C.idle },
+  stale: { glyph: '◐', color: C.warn },
+  fail: { glyph: '✕', color: C.bad },
+  error: { glyph: '!', color: C.warn },
+  waived: { glyph: '◇', color: C.waived },
+}
 
-async function scriptPath($: EngineInterface, name: string): Promise<string | null> {
-  const path = `${$.plugin.root}/scripts/${name}`
+const EMPTY: Band = { hud: null, quota: [], error: null }
+
+const QUOTA_LABEL: Record<string, string> = { five_hour: '5h', seven_day: '7d', spend_limit: 'spend' }
+
+async function readHud($: EngineInterface, cwd: string): Promise<Hud | null | undefined> {
+  const script = `${$.plugin.root}/scripts/compound-v.py`
+  const argv = ['python3', '-I', '-B', script, 'hud', '--repo', cwd]
   try {
-    return (await $.fs.stat(path)).kind === 'file' ? path : null
+    const sid = await $.session.id()
+    if (sid) {
+      argv.push('--session', sid)
+    }
   } catch {
-    return null
+    // no session id: the CLI falls back to the newest open run
   }
-}
-
-async function readHud($: EngineInterface, runId?: string): Promise<{ run: HudRun | null } | null> {
-  const script = await scriptPath($, 'compound-v-dashboard.py')
-  if (script === null) {
-    return null
-  }
-  const argv = ['python3', '-B', script, 'hud', ...(runId ? ['--run', runId] : [])]
   try {
     const { exitCode, stdout } = await $.process.run(argv, { timeoutMs: READER_TIMEOUT_MS })
     if (exitCode !== 0) {
-      return null
+      return undefined
     }
-    const doc = JSON.parse(stdout) as { run: HudRun | null }
+    const doc = JSON.parse(stdout) as Partial<Hud>
 
-    return typeof doc === 'object' && doc !== null && 'run' in doc ? doc : null
+    return typeof doc === 'object' && doc !== null && typeof doc.run === 'string' ? (doc as Hud) : null
   } catch {
-    return null
+    return undefined
   }
 }
-
-async function readLiveness($: EngineInterface, runDir: string): Promise<Record<string, Live> | null> {
-  const script = await scriptPath($, 'compound-v-liveness.py')
-  if (script === null) {
-    return null
-  }
-  try {
-    const { stdout } = await $.process.run(['python3', '-B', script, '--json', runDir], {
-      timeoutMs: LIVENESS_TIMEOUT_MS,
-    })
-    const doc = JSON.parse(stdout) as Record<string, { liveness?: string; last_progress_s?: number | null }>
-    const out: Record<string, Live> = {}
-    for (const [id, one] of Object.entries(doc)) {
-      if (one && typeof one.liveness === 'string') {
-        out[id] = {
-          liveness: one.liveness,
-          idle_s: typeof one.last_progress_s === 'number' ? one.last_progress_s : null,
-        }
-      }
-    }
-
-    return out
-  } catch {
-    return null
-  }
-}
-
-function age(seconds: number | null | undefined): string {
-  if (seconds === null || seconds === undefined) {
-    return '?'
-  }
-  if (seconds < 60) {
-    return `${seconds}s`
-  }
-  if (seconds < 3600) {
-    return `${Math.floor(seconds / 60)}m`
-  }
-
-  return `${Math.floor(seconds / 3600)}h${Math.floor((seconds % 3600) / 60)}m`
-}
-
-const QUOTA_LABEL: Record<string, string> = { five_hour: '5h', seven_day: '7d', spend_limit: 'spend' }
 
 /**
  * The account's rate-limit windows now, against where they stood when this run was first
@@ -149,172 +100,45 @@ function quotaText(q: Quota): string {
   return delta >= 0 ? `${label} +${delta}% → ${q.now}%` : `${label} → ${q.now}%`
 }
 
-/** What a job runs on, after the backend name: the resolved model, else its tier. */
-function route(job: HudJob): string {
-  const what = job.model ?? job.tier ?? ''
-
-  return job.effort ? `${what} · ${job.effort}` : what
+function cost(hud: Hud): string {
+  return hud.cost_usd === null ? '$?' : `$${hud.cost_usd.toFixed(2)}`
 }
 
-type Look = { glyph: string; color: string; note: string; isLoud: boolean }
-
-/** One job's mark, color and right-hand note. `frame` animates a running job. */
-function look(job: HudJob, live: Record<string, Live> | null, frame: number): Look {
-  const why = trouble(job, live)
-  const idle = live?.[job.id]?.idle_s
-  if (why !== null) {
-    const since = STALLED.includes(why) ? ` · ${age(idle)}` : ''
-
-    return { glyph: '✕', color: C.bad, note: `${why}${since}`, isLoud: true }
-  }
-  if (job.status === 'done' || job.status === 'success') {
-    return { glyph: '●', color: C.done, note: 'done', isLoud: false }
-  }
-  if (job.status === 'running') {
-    const isSlow = typeof idle === 'number' && idle >= 300
-    const note = live === null ? '?' : age(idle)
-
-    return { glyph: SPIN_FRAMES[frame % SPIN_FRAMES.length] ?? '◐', color: isSlow ? C.warn : C.run, note, isLoud: true }
-  }
-
-  return { glyph: '○', color: C.idle, note: 'queued', isLoud: false }
-}
-
-/** Why a job needs a person, or null. The key is what a toast is deduplicated on. */
-function trouble(job: HudJob, live: Record<string, Live> | null): string | null {
-  if (job.attention) {
-    return job.status.toUpperCase()
-  }
-  const state = live?.[job.id]?.liveness
-  if (job.status === 'running' && state && STALLED.includes(state)) {
-    return state
-  }
-
-  return null
-}
-
-function closingLine(run: HudRun, quota: Quota[]): string {
-  const bad = run.waves.flatMap(w => w.jobs).filter(j => j.attention)
-  const tail = bad.length > 0 ? ` · ${bad.map(j => `${j.id} ${j.status}`).join(', ')}` : ''
-  const spent = quota.length > 0 ? ` · account quota ${quota.map(quotaText).join(', ')}` : ''
-  const loose = run.unresolved > 0 ? ` · ${run.unresolved} caller(s) not lane-checked` : ''
-
-  return `${run.id} · ${run.phase} · ${run.done}/${run.total} done${tail}${loose}${spent}`
-}
-
-// The poller's own bookkeeping. Module variables start over on a hot reload, which is
-// what we want: the next tick re-reads everything.
-const mem = { isBusy: false, ticks: 0, stateMtime: -1, livenessAt: 0 }
+// Module variables start over on a hot reload: the next tick re-reads everything.
+const mem = { isBusy: false, mtime: -1, readAt: -IDLE_MS }
 
 async function step($: EngineInterface): Promise<void> {
   const now = await $.clock.now()
-  const cur = (await read($, band)) ?? EMPTY
-  mem.ticks += 1
-
-  if (cur.closing !== null && now > cur.closing.until) {
-    await update($, band, b => ({ ...(b ?? EMPTY), closing: null }))
-  }
-
-  if (cur.run === null) {
-    if (mem.ticks % IDLE_POLL_EVERY !== 1) {
-      return
-    }
-    // A repository that never ran Compound V has no execution directory: one stat every
-    // 30 s, and no reader process at all.
-    try {
-      const root = `${await $.session.cwd()}/docs/superpowers/execution`
-      if ((await $.fs.stat(root)).kind !== 'dir') {
-        return
-      }
-    } catch {
-      return
-    }
-    const doc = await readHud($)
-    if (doc?.run) {
-      mem.stateMtime = -1
-      mem.livenessAt = 0
-      await update($, band, b => ({ ...(b ?? EMPTY), run: doc.run, live: null, alerted: [], quota: [], error: null }))
-
-      // Same tick, tracked path: liveness and the first toasts should not wait 5 s.
-      return step($)
-    }
-
-    return
-  }
-
-  const tracked = cur.run
-  let mtime = -2
+  const cwd = await $.session.cwd()
+  let mtime: number
   try {
-    mtime = (await $.fs.stat(`${tracked.run_dir}/state.json`)).mtimeMs
+    const st = await $.fs.stat(`${cwd}/${RUNS}`)
+    if (st.kind !== 'dir') {
+      throw new Error('not a dir')
+    }
+    mtime = st.mtimeMs
   } catch {
-    // gone or unreadable: fall through to the reader, which says which
-  }
-  const hasChanged = mtime !== mem.stateMtime
-  const isLivenessDue = tracked.running > 0 && now - mem.livenessAt >= LIVENESS_MS
-  const quota = await readQuota($, tracked.id)
-  if (!hasChanged && !isLivenessDue) {
-    if (JSON.stringify(quota) !== JSON.stringify(cur.quota)) {
-      await update($, band, b => ({ ...(b ?? EMPTY), quota }))
+    // A repository that never ran Compound V: one stat per tick and no reader process.
+    if ((await read($, band))?.hud) {
+      await update($, band, () => EMPTY)
     }
 
     return
   }
-
-  let run: HudRun = tracked
-  if (hasChanged) {
-    mem.stateMtime = mtime
-    const doc = await readHud($)
-    if (doc === null) {
-      await update($, band, b => ({ ...(b ?? EMPTY), error: 'run state unreadable' }))
-
-      return
-    }
-    if (doc.run === null || doc.run.id !== tracked.id) {
-      // The tracked run left the active set: say how it ended, for a minute.
-      const last = (await readHud($, tracked.id))?.run ?? tracked
-      mem.stateMtime = -1
-      mem.livenessAt = 0
-      await update($, band, () => ({
-        run: doc.run,
-        live: null,
-        alerted: [],
-        quota: [],
-        closing: { text: closingLine(last, quota), until: now + CLOSING_MS },
-        error: null,
-      }))
-
-      return
-    }
-    run = doc.run
+  // The reader re-hashes the tree, so it runs when a record moved, else every 30 s for staleness.
+  if (mtime === mem.mtime && now - mem.readAt < IDLE_MS) {
+    return
   }
+  mem.mtime = mtime
+  mem.readAt = now
+  const hud = await readHud($, cwd)
+  if (hud === undefined) {
+    await update($, band, b => ({ ...(b ?? EMPTY), error: 'run record unreadable' }))
 
-  let live = cur.live
-  if (run.running > 0 && (isLivenessDue || hasChanged)) {
-    live = await readLiveness($, run.run_dir)
-    mem.livenessAt = now
-  } else if (run.running === 0) {
-    live = {}
+    return
   }
-
-  const alerted = [...cur.alerted]
-  for (const job of run.waves.flatMap(w => w.jobs)) {
-    const why = trouble(job, live)
-    const key = `${job.id}:${why}`
-    if (why !== null && !alerted.includes(key)) {
-      alerted.push(key)
-      const idle = live?.[job.id]?.idle_s
-      const since = STALLED.includes(why) && idle != null ? `, no progress for ${age(idle)}` : ''
-      $.ui.toast(`Compound V · ${job.id} is ${why}${since}`, { timeoutMs: 8_000 })
-    }
-  }
-
-  const looseKey = `unresolved:${run.unresolved}`
-  if (run.unresolved > 0 && !alerted.includes(looseKey)) {
-    alerted.push(looseKey)
-    $.ui.toast(`Compound V · ${run.unresolved} caller(s) wrote without a lane check`, { timeoutMs: 8_000 })
-  }
-
-  await update($, band, b => ({ ...(b ?? EMPTY), run, live, alerted, quota, error: null }))
+  const quota = hud === null ? [] : await readQuota($, hud.run)
+  await update($, band, () => ({ hud, quota, error: null }))
 }
 
 /** `CV_DISABLED_HOOKS=run-band` turns the band off, like any other Compound V hook. */
@@ -325,14 +149,6 @@ async function isDisabled($: EngineInterface): Promise<boolean> {
     .split(',')
     .map(name => name.trim())
     .includes('run-band')
-}
-
-/** Advances the running-job glyph, only while a tracked run has a job running. */
-async function spinTick($: EngineInterface): Promise<void> {
-  const cur = await read($, band)
-  if (cur?.run && cur.run.running > 0) {
-    await update($, spin, n => (n + 1) % SPIN_FRAMES.length)
-  }
 }
 
 async function tick($: EngineInterface): Promise<void> {
@@ -355,9 +171,6 @@ export const register: Register = on => {
       $.clock.every(TICK_MS, () => {
         void tick($)
       })
-      $.clock.every(SPIN_MS, () => {
-        void spinTick($)
-      })
       void tick($)
     }
 
@@ -366,144 +179,44 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const b = await read($, band)
-    const frame = await read($, spin)
     const beneath = await next(e)
-    if (e.props.hasSurvey || b === null || (b.run === null && b.closing === null)) {
+    if (e.props.hasSurvey || b === null || b.hud === null) {
       return beneath
     }
-
     const { Box, Text } = $.ui.resolve(e)
-    const rows = []
-
-    if (b.closing !== null) {
-      rows.push(
-        <Box flexDirection="row" columnGap={1}>
-          <Text bold color={C.brand}>
-            V
-          </Text>
-          <Text dimColor wrap="truncate-end">
-            {b.closing.text}
-          </Text>
-        </Box>,
-      )
-    }
-
-    if (b.run !== null) {
-      const run = b.run
-      const jobs = run.waves.flatMap(w => w.jobs)
-      const cell = jobs.length > 24 ? '▰' : '▰▰'
-      const waveCount = run.waves.filter(w => w.n !== null && w.n !== '?').length
-      const nameWidth = Math.min(28, Math.max(...jobs.map(j => j.id.length), 4) + 2)
-      const isTable = jobs.length <= TABLE_MAX_JOBS && jobs.length + 3 <= e.props.maxRows
-
-      // Header: who and where on the left; one segment per job and the count on the right.
-      rows.push(
-        <Box flexDirection="row" justifyContent="space-between" columnGap={2}>
-          <Box flexDirection="row" columnGap={1}>
-            <Text bold color={C.brand}>
-              V
-            </Text>
-            <Text bold wrap="truncate-end">
-              {run.id}
-            </Text>
-            <Text dimColor>{run.phase.toLowerCase()}</Text>
-            {b.error !== null && <Text color={C.warn}>{b.error}</Text>}
-            {run.state_error && <Text color={C.warn}>state.json did not parse</Text>}
-          </Box>
-          <Box flexDirection="row" columnGap={1}>
-            <Box flexDirection="row">
-              {jobs.map(job => {
-                const l = look(job, b.live, 0)
-
-                return (
-                  <Text color={l.color}>{cell}</Text>
-                )
-              })}
-            </Box>
-            <Text bold>
-              {run.done}/{run.total}
-            </Text>
-          </Box>
-        </Box>,
-      )
-
-      for (const wave of run.waves) {
-        const label = wave.n === null ? '' : wave.n === '?' ? 'unplaced' : `wave ${wave.n}/${waveCount}`
-        if (isTable) {
-          rows.push(
-            <Box flexDirection="row" alignItems="flex-start">
-              <Box width={10}>
-                <Text dimColor>{label}</Text>
-              </Box>
-              <Box flexDirection="column" flexGrow={1}>
-                {wave.jobs.map(job => {
-                  const l = look(job, b.live, frame)
-
-                  return (
-                    <Box flexDirection="row" justifyContent="space-between" columnGap={2}>
-                      <Box flexDirection="row">
-                        <Box width={GLYPH_WIDTH}>
-                          <Text color={l.color}>{l.glyph}</Text>
-                        </Box>
-                        <Box width={nameWidth}>
-                          <Text bold={l.isLoud} dimColor={!l.isLoud} wrap="truncate-end">
-                            {job.id}
-                          </Text>
-                        </Box>
-                        <Box width={BACKEND_WIDTH}>
-                          {job.backend !== null && <Text color={C.route}>{job.backend}</Text>}
-                        </Box>
-                        {route(job) !== '' && <Text dimColor>{route(job)}</Text>}
-                      </Box>
-                      <Text color={l.isLoud ? l.color : undefined} dimColor={!l.isLoud}>
-                        {l.note}
-                      </Text>
-                    </Box>
-                  )
-                })}
-              </Box>
-            </Box>,
-          )
-        } else {
-          rows.push(
-            <Box flexDirection="row" alignItems="flex-start">
-              <Box width={10}>
-                <Text dimColor>{label}</Text>
-              </Box>
-              <Box flexDirection="row" flexWrap="wrap" columnGap={2} flexGrow={1}>
-                {wave.jobs.map(job => {
-                  const l = look(job, b.live, frame)
-
-                  return (
-                    <Box flexDirection="row" columnGap={1}>
-                      <Text color={l.color}>{l.glyph}</Text>
-                      <Text bold={l.isLoud} dimColor={!l.isLoud}>
-                        {job.id}
-                      </Text>
-                      {l.isLoud && <Text color={l.color}>{l.note}</Text>}
-                    </Box>
-                  )
-                })}
-              </Box>
-            </Box>,
-          )
-        }
+    const hud = b.hud
+    const steps = Object.entries(hud.steps)
+    const waived = steps.filter(([, m]) => m === 'waived').map(([s]) => s)
+    const rows = [
+      <Box flexDirection="row" columnGap={1}>
+        <Text bold color={C.brand}>
+          V
+        </Text>
+        <Text bold wrap="truncate-end">
+          {hud.run}
+        </Text>
+        <Text dimColor>{`· ${hud.stage} (${hud.tier}) ·`}</Text>
+        {steps.map(([name, m]) => (
+          <Text color={MARK[m]?.color}>{`${name} ${MARK[m]?.glyph ?? '?'}`}</Text>
+        ))}
+        <Text dimColor>{`· round ${hud.review_round}/${MAX_ROUNDS} ·`}</Text>
+        <Text>{cost(hud)}</Text>
+        {b.error !== null && <Text color={C.warn}>{b.error}</Text>}
+      </Box>,
+    ]
+    if (hud.outcome !== 'pending' || waived.length > 0) {
+      const parts = [hud.outcome !== 'pending' ? `outcome ${hud.outcome}` : '']
+      if (waived.length > 0) {
+        parts.push(`waived by the user: ${waived.join(', ')}`)
       }
-    }
-
-    if (b.run !== null && b.run.unresolved > 0) {
+      const color = hud.outcome === 'verified' ? C.pass : hud.outcome === 'failed' ? C.bad : C.warn
       rows.push(
-        <Box flexDirection="row" columnGap={1}>
-          <Text color={C.warn}>⚠</Text>
-          <Text color={C.warn} wrap="truncate-end">
-            {b.run.unresolved} caller(s) wrote without a lane check — the guard could not tell whose they were
-          </Text>
-          <Text dimColor>lane-guard-unresolved.jsonl</Text>
+        <Box flexDirection="row" paddingLeft={2}>
+          <Text color={color}>{parts.filter(p => p !== '').join(' · ')}</Text>
         </Box>,
       )
     }
-
-    if (b.run !== null && b.quota.length > 0) {
+    if (b.quota.length > 0) {
       rows.push(
         <Box flexDirection="row" justifyContent="space-between" columnGap={2}>
           <Text dimColor>account quota since this run appeared</Text>
