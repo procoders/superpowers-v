@@ -101,6 +101,14 @@ Say **done** only when the outcome is `verified`. For incomplete or failed, name
 
 The Stop hook refuses the first stop of an unverified run, once, with the reason. Continue with this skill. If you are waiting on the user or a step cannot run, say so and stop again. The run is then recorded incomplete. An incomplete run reopens when you write a receipt (or a review, a waiver, a stage move), so carry on once the user answers; a verified run stays closed.
 
+## After verified: commit, then any follow-up
+
+When the outcome is `verified`, commit the work locally right away (never push). Ask once if the user has not
+said how they want commits; "your call" or no preference means commit. A follow-up change, even a one-line fix from a
+low review note, starts a **new run from that commit**: before the commit, the new run's scope and escalation see the
+whole feature's diff and demand the full set of checks again. Never undo a fix to get back to a verified tree; if a
+follow-up is not worth its checks, leave it as a noted follow-up instead.
+
 ## Common failures
 
 | Claim | What it needs |
@@ -109,4 +117,4 @@ The Stop hook refuses the first stop of an unverified run, once, with the reason
 | "Works in the browser" | A current `live` receipt, or the user's quoted waiver |
 | "Review fixed" | Round 2 recorded with no blocker or high findings |
 | "Done" | `status` exits 0 |
-| "Just one more tweak after review" | It stales every receipt, and no round is left |
+| "Just one more tweak after review" | Commit the verified tree first, then a new run for the tweak |

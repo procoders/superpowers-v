@@ -377,7 +377,7 @@ class ReceiptsTest(Base):
         self.assertEqual(rec, stale)
 
     def test_lock_not_held_during_step(self):
-        lock = self.repo / "docs/compound-v/runs" / f".{self.rec['id']}.lock"
+        lock = self.repo / ".git/compound-v/locks" / f"{self.rec['id']}.lock"
         rec = self.reload()
         rec["test_cmd"] = ("python3 -c \"import fcntl, os, sys; fd = os.open('%s', os.O_RDWR); "
                            "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\"" % lock)
@@ -386,6 +386,11 @@ class ReceiptsTest(Base):
         self.assertTrue(lock.exists())
         self.assertEqual("pass", receipts.run_step(self.repo, self.reload(), "tests")["result"])
         self.assertEqual(snapshot.tree(self.repo), receipts._current(self.repo, rec)["snapshot"])
+
+    def test_lock_lives_outside_the_tree(self):
+        receipts.note_checkout(self.repo, self.reload(), "x", "/tmp/x")
+        self.assertFalse(list((self.repo / "docs/compound-v/runs").glob("*.lock")))
+        self.assertNotIn(b".lock", helpers.sh(self.repo, "status", "--porcelain", "--untracked-files=all"))
 
     def test_concurrent_updates_keep_all(self):
         import threading
