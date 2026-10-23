@@ -53,44 +53,10 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         id: notes
         run: |
-          python3 - "${{ steps.ver.outputs.version }}" <<'PY'
-          import re, sys, os
-          v = sys.argv[1]
-          cl = open("CHANGELOG.md", encoding="utf-8").read()
-          parts = re.split(r'(?m)^## \[?\d+\.\d+\.\d+.*$', cl)
-          heads = re.findall(r'(?m)^## \[?(\d+\.\d+\.\d+).*$', cl)
-          body = ""
-          for i, hv in enumerate(heads):
-              if hv == v:
-                  body = parts[i + 1].strip()
-                  break
-          if not body:
-              body = "See the CHANGELOG for details."
-          body = body[:6000].rstrip()
-          body += "\n\nFull detail in the [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)."
-          with open("_release_notes.md", "w", encoding="utf-8") as fh:
-              fh.write(body)
-          # A short human title. The CHANGELOG heading is `## [X.Y.Z] - YYYY-MM-DD`, so
-          # what follows the dash is the DATE, not a name — v3.0.6 and v3.1.0 both shipped
-          # titled "vX.Y.Z — 2026-09-02" before this was noticed. Take the first `### `
-          # heading of the body instead, which is where the release actually names itself,
-          # and fall back to no suffix rather than to a date.
-          m = re.search(r'(?m)^## \[?%s\]?\s*(?:[—-]\s*(.*))?$' % re.escape(v), cl)
-          title_suffix = (m.group(1).strip() if m and m.group(1) else "").strip()
-          if re.fullmatch(r'\d{4}-\d{2}-\d{2}', title_suffix or ""):
-              title_suffix = ""
-          if not title_suffix:
-              h = re.search(r'(?m)^###\s+(.+?)\s*$', body)
-              if h:
-                  # "Fixed — a two-line change no longer runs twenty thousand tests"
-                  # reads better as the half after the dash.
-                  t = h.group(1).strip()
-                  parts = re.split(r'\s+[—-]\s+', t, maxsplit=1)
-                  title_suffix = (parts[1] if len(parts) > 1 else t).strip()[:80]
-          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
-              fh.write("title_suffix=%s\n" % title_suffix)
-          print("Extracted %d chars of notes." % len(body))
-          PY
+          # Title: an explicit `<!-- title: ... -->` in the version's section, else the heading text after the
+          # dash when it is not a date, else none. Relative links become absolute so they work on the release page.
+          python3 .github/scripts/release_notes.py "${{ steps.ver.outputs.version }}" "${{ github.repository }}" >> "$GITHUB_OUTPUT"
+          echo "Extracted $(wc -c < _release_notes.md) chars of notes."
 
       # A release must not publish on a red validate. Both workflows start on the
       # same push; on 2026-09-03 v3.4.0 was published while "Validate Plugin" was

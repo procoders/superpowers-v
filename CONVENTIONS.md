@@ -76,3 +76,5 @@ states it.
 
 - `plugin.json`, `marketplace.json` and the top `## [x.y.z]` heading of `CHANGELOG.md` carry the same
   version; CI fails on drift.
+- The GitHub release is cut by CI when that version lands on `main`. Its title comes from a
+  `<!-- title: ... -->` line under the version heading (else the heading text after the dash, if not a date).

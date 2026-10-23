@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [4.0.0] — 2026-10-23
 
+<!-- title: Compound V 4: standalone, asks first, proves before done -->
+
 Compound V is now a standalone plugin, `compound-v`. Its cycle is brainstorm → build (one builder
 researches, plans and codes) → verification with tree-bound receipts, and Claude Code does the orchestration. The
 salon experiments on 3.9.1 ([docs/v4/salon-report.md](docs/v4/salon-report.md)) showed the light flow
