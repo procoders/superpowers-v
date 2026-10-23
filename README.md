@@ -4,7 +4,9 @@ by [ProCoders](https://procoders.tech)
 
 **Give Claude Code a senior engineer's habits: it interviews the client first and proves the work before it says done.**
 
-![Compound V](assets/compound-v-squad.png)
+[![Compound V in 34 seconds: prompt and pray, or ask, build and prove](assets/compound-v-promo.gif)](assets/compound-v-promo.mp4)
+
+<sub>34 s · [watch with sound](assets/compound-v-promo.mp4)</sub>
 
 ## The loop that gets you blamed
 
@@ -75,6 +77,8 @@ than the run.
 
 **No**, for prototypes, spikes, throwaway scripts or a tight edit-run loop. There, plain Claude Code is the right
 tool, and Compound V gets out of the way: typos, copy and config changes go straight to a light check.
+
+![Compound V](assets/compound-v-squad.png)
 
 ## How it works
 
