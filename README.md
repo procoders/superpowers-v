@@ -19,6 +19,22 @@ way a busy developer does and sent fixes until they were happy to hand over ($2.
 bug. Blind judges then found every defect above in the same build.** Your own happy-path check can't see them,
 because you check what you built, not what you forgot.
 
+## A senior team in one plugin
+
+What Compound V does in one run, role by role:
+
+- 🧭 **Product analyst:** interviews you one question at a time about the product, data, forms, operations and edge cases, then writes the spec.
+- ⚖️ **Domain expert:** researches the domain and the jurisdiction's duties (privacy, consumer notices, accessibility).
+- 🏺 **Code archaeologist:** reads the existing code first and builds a citation-checked map of a live project.
+- 📐 **Tech lead:** plans with an acceptance table and OWASP-based checklists before writing code.
+- 💻 **Developer:** writes the code together with its tests.
+- 🎨 **UI designer:** keeps one `DESIGN.md` and shared components, then checks screenshots at desktop and phone sizes.
+- 🧪 **QA engineer:** runs the real flows in a real browser and tests limits and edge cases.
+- 🛡️ **Security reviewer:** an independent model tries to break sessions, permissions, rate limits and cross-user access.
+- ✅ **Release gate:** nothing counts as done without signed proof tied to the exact code.
+
+You stay the owner: you answer the questions, it does the rest.
+
 ## Compound V works both ends, and the middle
 
 - **Before the code: the questions nobody asked.** The brainstorm interviews you (or your client) one question at a
