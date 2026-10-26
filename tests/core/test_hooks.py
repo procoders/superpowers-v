@@ -353,6 +353,22 @@ class HooksTest(unittest.TestCase):
         stops = self.load(rec)["reviewer_stops"]
         self.assertEqual(["compound-v:reviewer"], [s["agent_type"] for s in stops])
 
+    def test_subagent_stop_records_on_run_closed_incomplete(self):
+        rec = self.start()
+        run.update(self.repo, rec, lambda r: r.update(outcome="incomplete"))
+        self.start(session="s2")
+        unbound = self.start(session=None)
+        done = self.start(session="s3")
+        run.update(self.repo, done, lambda r: r.update(outcome="verified"))
+        for sid in ("s1", "s3", "s4"):
+            hooks.subagent_stop_hook({"hook_event_name": "SubagentStop", "session_id": sid,
+                                      "agent_id": "a-" + sid,
+                                      "agent_type": "compound-v:reviewer"}, self.repo)
+        self.assertEqual(["a-s1"], [s["agent_id"] for s in self.load(rec)["reviewer_stops"]])
+        self.assertEqual("incomplete", self.load(rec)["outcome"])
+        self.assertNotIn("reviewer_stops", self.load(done))
+        self.assertNotIn("a-s1", [s["agent_id"] for s in self.load(unbound)["reviewer_stops"]])
+
     def test_subagent_stop_logged(self):
         self.start()
         for kind in ("Explore", "compound-v:reviewer"):

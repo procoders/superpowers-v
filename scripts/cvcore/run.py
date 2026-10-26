@@ -164,7 +164,7 @@ def update(repo, rec, fn) -> dict:
     return fresh
 
 
-def _open_runs(repo) -> list:
+def _open_runs(repo, outcomes=(None,)) -> list:
     runs = []
     for p in _dir(repo).glob("*.json"):
         try:
@@ -172,7 +172,7 @@ def _open_runs(repo) -> list:
         except (OSError, ValueError):
             continue
         if isinstance(rec, dict) and rec.get("id") == p.stem and "stage" in rec \
-                and rec.get("outcome") is None:
+                and rec.get("outcome") in outcomes:
             runs.append(rec)
     return sorted(runs, key=lambda r: (str(r.get("created_at", "")), r["id"]), reverse=True)
 
@@ -190,6 +190,17 @@ def active(repo, session_id=None):
             return rec
     for rec in runs:
         if not rec.get("sessions"):
+            return rec
+    return None
+
+
+def reopenable(repo, session_id):
+    # The run this session is bound to, even if the Stop hook closed it incomplete or failed
+    # while a background subagent was still working. Receipts reopen such a run; a verified one stays closed.
+    if session_id is None:
+        return None
+    for rec in _open_runs(repo, (None, "incomplete", "failed")):
+        if session_id in rec.get("sessions", []):
             return rec
     return None
 

@@ -147,7 +147,10 @@ def subagent_stop_hook(payload: dict, repo: Path):
         if kind.split(":")[-1] != "reviewer":
             _event(repo, {"event": "subagent_stop", "agent_type": kind, "recorded": False})
             return None
-        rec = run.active(repo, payload.get("session_id"))
+        sid = payload.get("session_id")
+        # A background reviewer can stop after the Stop hook closed the run as incomplete; the
+        # session's own run wins over an unbound one.
+        rec = run.reopenable(repo, sid) or run.active(repo, sid)
         if rec is not None:
             note_reviewer_stop(repo, rec, payload.get("agent_id"), kind)
         _event(repo, {"event": "subagent_stop", "agent_type": kind, "recorded": rec is not None})
