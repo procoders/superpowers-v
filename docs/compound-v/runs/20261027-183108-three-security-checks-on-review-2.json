@@ -1,0 +1,13 @@
+{
+  "snapshot": "ecd6a09030444aca2837862b210c318433fbf21b",
+  "summary": "Round 2: all six round-1 findings are fixed. The kit now requires a first commit and explains that our run skipped init and used the bench-committed config; the report's output tokens (447K, 95K thinking), the aeb7dc8 17:39 commit time, the Pro wording and the ≈17:45 after-quota reading now match the evidence. Regression checks next to each fix (cache read/write and input token counts, 55/84 min, 17:43:57 end, fa92a2c 17:43, init's first-commit rule, the meta.txt quota values) also match.",
+  "coverage": [
+    "F1",
+    "F2",
+    "F3",
+    "F4",
+    "F5",
+    "F6"
+  ],
+  "findings": []
+}

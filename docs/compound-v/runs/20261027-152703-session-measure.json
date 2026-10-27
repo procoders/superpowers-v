@@ -38,7 +38,7 @@
   "lane_state": {},
   "lanes": {},
   "live_cmd": "python3 scripts/lint-frontmatter.py .",
-  "outcome": null,
+  "outcome": "verified",
   "outcomes": [
     {
       "at": "2026-10-27T15:33:19+00:00",
@@ -183,7 +183,7 @@
   ],
   "setup_cmd": null,
   "spec": null,
-  "stage": "verify",
+  "stage": "done",
   "stop_refusals": [
     "13362699f795b9e957dcb42e20d3f083e90349d6:verify",
     "8d5a60e4967e5f8923de97940aaa60a340d3a1c4:verify"

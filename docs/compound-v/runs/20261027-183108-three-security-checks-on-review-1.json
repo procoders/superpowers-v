@@ -1,0 +1,95 @@
+{
+  "snapshot": "747e74e5116d5f5084b47c4054bce529914f7d3e",
+  "summary": "Not ready to ship as is. The report's headline numbers hold up against the logs: 55 and 84 min, $32.14, the ≈$19 estimate (recomputed at $19.2–19.9), run 1 recorded at $0.63, 11 owner messages, and all three security checks (supported by the probe logs, the DB and the supervising transcript). Four things are wrong: the kit's first step would stop /compound-v:init; the kit says its steps match our run, which in fact skipped init; the output-token count is understated about 5.8x; and aeb7dc8 is credited to run 1 although it was committed after run 2.",
+  "coverage": [
+    "0",
+    "0a numbers: wall.txt, turn-N.json total_cost_usd, run records, session-usage.py, recomputed token fraction (.review-probes/tokens.py)",
+    "0b security checks: probes-1-2.log, probes-2.log, salon.db, sec.spec.ts, supervising transcript for check 3",
+    "0c seed .env defect against scripts/migrate.ts, prisma/seed.ts, DEPLOY.md: confirmed",
+    "0d kit against README.md install lines (match) and skills/init, skills/brainstorm",
+    "0e Pro yardstick (wokey.ai, week of 2026-10-19) not verified: web source; only the arithmetic was checked ($32.14/$11 ≈ 2.9, /$157 ≈ 20%, $19/$11 ≈ 1.7)",
+    "1 skipped: docs-only change",
+    "2 skipped: docs-only change",
+    "3 skipped: docs-only change",
+    "4 skipped: docs-only change",
+    "5 skipped: docs-only change",
+    "6 skipped: docs-only change",
+    "7 skipped: docs-only change",
+    "8 skipped: docs-only change",
+    "9 skipped: docs-only change"
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "high",
+      "title": "Kit's 'empty folder with git init' makes /compound-v:init stop",
+      "evidence": "docs/v4/sumit-run-kit.md:7 says to start from an empty folder with `git init` and nothing else, and step 1 (:27) runs /compound-v:init. skills/init/SKILL.md:27 says: 'No first commit, or not a git repo: stop and say so. The run record pins a base commit, so Compound V cannot run without one.' Our own run started from a setup commit (acd1e13 'v4 run setup (sumit)' in ~/Dev/cv-v4-run-sumit).",
+      "reproduce": "grep -n 'No first commit' skills/init/SKILL.md; git -C ~/Dev/cv-v4-run-sumit log --format='%h %s' | tail -1",
+      "file": "docs/v4/sumit-run-kit.md",
+      "line_start": 7,
+      "line_end": 8,
+      "confidence": 0.85,
+      "recommendation": "Have the kit make a first commit after git init (for example `git commit --allow-empty -m init`) before /compound-v:init."
+    },
+    {
+      "id": "F2",
+      "severity": "medium",
+      "title": "Kit says its steps match our run, but our run skipped /compound-v:init and started from a pre-written config",
+      "evidence": "sumit-run-kit.md:36-37 says 'in the interactive terminal the steps and prompts are the same', and :27 has the user run /compound-v:init. In our run, .claude/compound-v.json ({default_tier: full, reviewer: claude, test_cmd: npm test, budget_usd: 7}) and .claude/settings.json were committed by the bench in acd1e13, and turn 1 was the job post. On an empty repo, init finds no package.json and proposes no test_cmd (skills/init/SKILL.md:29), so Sumit's config, and with it his numbers, can differ from ours. sumit-run.md:20 also calls the starting point 'an empty repo'.",
+      "reproduce": "git -C ~/Dev/cv-v4-run-sumit show acd1e13:.claude/compound-v.json; head -c 80 ~/Dev/cv-salon-e2e-kit/logs/cv-v4-run-sumit/turn-1.user.txt",
+      "file": "docs/v4/sumit-run-kit.md",
+      "line_start": 27,
+      "line_end": 37,
+      "confidence": 0.8,
+      "recommendation": "State that our run pre-committed this config instead of running init, and give the exact compound-v.json (default_tier full, reviewer claude, budget_usd 7) for Sumit to use, or have init choose these values."
+    },
+    {
+      "id": "F3",
+      "severity": "medium",
+      "title": "Output tokens understated about 5.8x (76.7K reported, 446,955 measured)",
+      "evidence": "sumit-run.md:47 says '76.7K output'. Claude Code's own turn-12.json modelUsage['claude-opus-5-5'].outputTokens = 446955 (its cache read, cache write and input match the doc exactly). session-usage.py keeps the first transcript row for each message id, and that row carries a partial streaming output_tokens; taking the maximum per id gives 446,955. The ≈$19 estimate still holds when recomputed with the corrected output and with 1h cache writes at 2x ($19.2–19.9).",
+      "reproduce": "python3 -c \"import json;print(json.load(open('/Users/oleg/Dev/cv-salon-e2e-kit/logs/cv-v4-run-sumit/turn-12.json'))['modelUsage']['claude-opus-5-5']['outputTokens'])\"; python3 .review-probes/tokens.py",
+      "file": "docs/v4/sumit-run.md",
+      "line_start": 47,
+      "line_end": 47,
+      "confidence": 0.9,
+      "recommendation": "Report 447K output (source: Claude Code's modelUsage), and fix session-usage.py to keep the last or maximum usage per message id."
+    },
+    {
+      "id": "F4",
+      "severity": "medium",
+      "title": "Commit aeb7dc8 credited to run 1, and run 2 described as a follow-up from it",
+      "evidence": "sumit-run.md:29 puts 'app committed (aeb7dc8)' at 17:15:10, and :30 calls run 2 'a follow-up from that commit'. git log shows aeb7dc8 at 17:39:03, after run 2's last tests receipt (17:38:42). Run 2's record has base_commit acd1e13, not aeb7dc8; only run 3's base is aeb7dc8. So aeb7dc8 holds the work of runs 1 and 2.",
+      "reproduce": "git -C ~/Dev/cv-v4-run-sumit log --format='%h %ad %s' --date=iso; grep -o '\"base_commit\": \"[0-9a-f]*' ~/Dev/cv-v4-run-sumit/docs/compound-v/runs/20261027-171527-online-booking-web-app-f.json",
+      "file": "docs/v4/sumit-run.md",
+      "line_start": 29,
+      "line_end": 31,
+      "confidence": 0.85,
+      "recommendation": "Drop the commit from the run 1 row and say aeb7dc8 (17:39) holds runs 1 and 2 and fa92a2c holds run 3."
+    },
+    {
+      "id": "F5",
+      "severity": "medium",
+      "title": "'Expect at least one 5-hour limit on Pro' rests on a figure the same paragraph calls an upper estimate",
+      "evidence": "sumit-run.md:57-59 says the Pro figure is an upper estimate (the limits seem to weigh cache reads below API price; cache reads are 57.1M of the tokens), then says 'On Pro, expect this run to hit the 5-hour limit at least once'. The kit repeats this as an expectation (sumit-run-kit.md:14). An upper bound of about three windows cannot support a lower bound of one hit. Nothing measured on Pro.",
+      "reproduce": "sed -n 54,59p docs/v4/sumit-run.md; sed -n 14,15p docs/v4/sumit-run-kit.md",
+      "file": "docs/v4/sumit-run.md",
+      "line_start": 57,
+      "line_end": 59,
+      "confidence": 0.6,
+      "recommendation": "Reword as 'may hit the 5-hour limit (estimate)', and in the kit say 'if you hit a limit pause'."
+    },
+    {
+      "id": "F6",
+      "severity": "low",
+      "title": "The 'after' quota reading may predate the end of the run",
+      "evidence": "meta.txt records the after reading as '2026-10-27T17:35Z+'. The run ended at 17:43:57 (wall.txt turn-12 end), and run 3 ran 17:39–17:43. sumit-run.md:48 calls it 'before and after'. If it was read at 17:35, the last ~9 minutes are not in 9%/5%.",
+      "reproduce": "grep after ~/Dev/cv-salon-e2e-kit/logs/cv-v4-run-sumit/meta.txt; tail -1 ~/Dev/cv-salon-e2e-kit/logs/cv-v4-run-sumit/wall.txt",
+      "file": "docs/v4/sumit-run.md",
+      "line_start": 48,
+      "line_end": 48,
+      "confidence": 0.5,
+      "recommendation": "Give the exact time of the after reading, or note that it was taken before run 3 ended."
+    }
+  ]
+}
