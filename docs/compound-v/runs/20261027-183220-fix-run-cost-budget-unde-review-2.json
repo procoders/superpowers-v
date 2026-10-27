@@ -1,0 +1,37 @@
+{
+  "snapshot": "f698296aa4534b9deb79864bbad73222caafc41c",
+  "summary": "Round 2: F1, F2 and F5 are fixed. Workflow agents at any depth are counted, and the whole-file mmap search on a 65-67 MB transcript takes 0.21-0.23 s with 86 MB RSS. The end-to-end stop hook finishes in 0.23-0.37 s, far inside the 7 s limit, and the real sumit transcript reads cli $32.14. The exact F3 and F4 cases are fixed and have tests, but each regression probe next to them still fails: an unpriced request before creation drops later spend (F3), and a torn cost-state line leaves a permanent overcount labelled 'cli' (F4).",
+  "coverage": [
+    "F1",
+    "F2",
+    "F3",
+    "F4",
+    "F5"
+  ],
+  "findings": [
+    {
+      "id": "F3",
+      "severity": "medium",
+      "title": "An unpriced request between the last cost-state and run creation still drops the spend made after creation",
+      "evidence": "scripts/cvcore/usage.py:113-115 set at_created only when no request at or before created_at is unpriced. Otherwise usage.py:80 falls back to start = total, which already contains the requests priced after creation. Probe: cost-state $1 at 10:00, fast-mode request at 10:05, run created 10:10, $4 request at 10:20, first observed mid-turn, so start_usd=5.0. At turn end the cost-state is $7 (fast request $2) and run_cost is 2.0 labelled 'estimate'. The true spend since creation is 4.0. The round-1 case (unpriced request after creation) now gives 12.0, and test_unpriced_request_after_creation_keeps_the_start covers it.",
+      "reproduce": "cd CHECKOUT && python3 .review-probes/r2.py | grep '^F3'",
+      "file": "scripts/cvcore/usage.py",
+      "line_start": 112,
+      "line_end": 115,
+      "confidence": 0.85,
+      "recommendation": "When the prefix up to created_at contains an unpriced request, set at_created to cli_usd plus the priced part of the prefix, and keep start_estimated or unknown so the cost reads unknown until the next cost-state settles it. Do not fall back to the current total. Add a test for an unpriced request before creation."
+    },
+    {
+      "id": "F4",
+      "severity": "medium",
+      "title": "A torn (partly written) cost-state line resets the figure and leaves a permanent overcount labelled 'cli'",
+      "evidence": "scripts/cvcore/usage.py:29 json.loads raises on the partial last line that holds the needle, and the except at usage.py:34 returns None for the whole search. It does not skip to the older cost-state. cost_state (usage.py:104-105) then treats the session as having no finished turn (cli 0, offset 0) and prices the whole file. apply_cost (usage.py:90-91) sees cli_usd fall and takes the 'new process' branch, which moves start_usd down by the old last_usd. Probe: run_cost 4.0 after a $4 turn, 8.0 while the line is torn, 9.0 labelled 'cli' once the line completes (want 4.0), and the error stays. The round-1 cases (no timestamp, non-numeric tokens) are fixed and covered by test_malformed_lines_are_skipped_not_fatal. test_last_cost_state_bad_json_none treats a None result as intended, but nothing tests what cost_state does next. Not seen on a real transcript: it needs a hook to read while the CLI is writing the cost-state line.",
+      "reproduce": "cd CHECKOUT && python3 .review-probes/r2b.py | grep '^torn'",
+      "file": "scripts/cvcore/usage.py",
+      "line_start": 27,
+      "line_end": 35,
+      "confidence": 0.7,
+      "recommendation": "Inside the rfind loop, catch ValueError/KeyError/TypeError for each candidate line and continue to the older one, as the quoted-needle case already does. Add a test with a torn trailing cost-state line that checks run_cost stays unchanged."
+    }
+  ]
+}

@@ -1,0 +1,82 @@
+{
+  "snapshot": "2d8004d1ac5af004d9c48d521befe44c89f503cd",
+  "summary": "Mostly meets the request. On the real 80-minute sumit transcript the estimate is $31.31 against the $31.36 Claude Code later reported, streamed ids and main/subagent duplicates count once, and the figure is labelled an estimate in status JSON, the band and the brief. Prices match the cited page. One gap remains: Workflow subagents (subagents/workflows/wf_*/agent-*.jsonl) are not counted, so a parallel build still undercounts. Edge cases: a turn over 8 MB freezes the estimate, and an unpriced request at the run's first observation loses spend for good. Ship after F1.",
+  "coverage": [
+    "0",
+    "1",
+    "2",
+    "4",
+    "3 skipped: CLI module with no identity, login, rate limit or public create surface",
+    "5 skipped: no production start or example secrets in this change",
+    "6 skipped: no sessions or cookies",
+    "7 skipped: no personal-data erasure in scope",
+    "8 skipped: no identifier normalisers; created_at vs transcript timestamp ordering checked under probe 1 instead",
+    "9 skipped: single-user local CLI, no cross-user objects",
+    "axis b: prices.json checked row by row against platform.claude.com/docs/en/about-claude/pricing (fetched 2026-10-27): every listed model, Haiku 5.5 long prompt over 100,000 tokens, Opus 5.5/Sonnet 5.5 0.05x and Fable/Mythos 5.1 0.025x cache hits, $10 per 1,000 web searches all match; fast mode and inference_geo us are left unpriced rather than mispriced",
+    "axis d: 60 MB main transcript + 11 MB subagents: cost_state 0.07 s, peak about 8.3 MB traced",
+    "axis e: CI size formula gives exactly 2500 lines (at the limit, passes)",
+    "tests: 156 core tests OK, tests/hooks/*.sh pass, lint-frontmatter OK"
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "high",
+      "title": "Workflow subagents' spend inside a turn is not counted (only subagents/agent-*.jsonl is globbed)",
+      "evidence": "scripts/cvcore/usage.py:45 globs main.with_suffix('')/subagents/agent-*.jsonl only. Workflow agents write to <session>/subagents/workflows/wf_*/agent-*.jsonl with assistant usage lines (11163 such files under ~/.claude/projects, e.g. -Users-oleg-Dev-cv-salon-run-B/7705d58e-.../subagents/workflows/wf_522911b2-f44/agent-a7677dbf31edc1c88.jsonl, 69 assistant lines). Probe W: one $4 subagent request and one $4 workflow-agent request after the anchor give estimated_usd 4.0, not 8.0. The request says 'and in subagents'; the plan narrowed it to one directory, and Compound V itself runs parallel lanes through the Workflow tool.",
+      "reproduce": "cd CHECKOUT && python3 .review-probes/p2_edges.py | grep '^W'",
+      "file": "scripts/cvcore/usage.py",
+      "line_start": 45,
+      "line_end": 45,
+      "confidence": 0.8,
+      "recommendation": "Glob subagents/**/agent-*.jsonl (rglob) so workflows/wf_*/ is included. Dedup by message id already handles overlap. Add a test with a workflows/wf_x/agent-*.jsonl file."
+    },
+    {
+      "id": "F2",
+      "severity": "medium",
+      "title": "A turn whose main transcript passes 8 MB without a cost-state freezes the estimate, so the budget cannot trip",
+      "evidence": "scripts/cvcore/usage.py:24-32 return None when no cost-state is in the 8 MB tail, and usage.py:106-110 then return None for any file over the tail size. The hook skips apply_cost, so the record keeps its last 'estimate' figure and the budget stays unexceeded however long the turn runs. Probe L: run_cost 4.0 before growth, cost_state None at 9.2 MB, run_cost still 4.0. The real sumit turn was 2 MB of main thread over 80 minutes, so a several-hour main-thread build reaches this. That is the request's own scenario.",
+      "reproduce": "cd CHECKOUT && python3 .review-probes/p2_edges.py | grep '^L'",
+      "file": "scripts/cvcore/usage.py",
+      "line_start": 21,
+      "line_end": 40,
+      "confidence": 0.75,
+      "recommendation": "When the tail has no cost-state, keep scanning backwards in chunks (it only uses rfind), or remember the last anchor offset in the run record and price from it. Mark the figure unknown rather than leaving the old one in place."
+    },
+    {
+      "id": "F3",
+      "severity": "medium",
+      "title": "An unpriced request (e.g. fast mode) at a run's first observation drops the spend between creation and that observation for good",
+      "evidence": "usage.py:115 sets at_created only when there are no unpriced requests, and usage.py:82 then falls back to start = current total (cli plus known estimate). When the turn ends, the cost-state settles unpriced back to 0, but start_usd is already too high. Probe U: run created 10:10, a $4 priced request at 10:20 and a fast-mode request at 10:21, first observed mid-turn. After the turn-end cost-state, run_cost is 8.0, but the true spend since creation is 12.0. The $4 request is lost and the result is labelled estimate.",
+      "reproduce": "cd CHECKOUT && python3 .review-probes/p2_edges.py | grep '^U'",
+      "file": "scripts/cvcore/usage.py",
+      "line_start": 80,
+      "line_end": 116,
+      "confidence": 0.7,
+      "recommendation": "Compute at_created from the requests timestamped at or before created_at (they are priced or not on their own), or keep the record's start pending while that prefix is unpriced and resolve it at the next cost-state."
+    },
+    {
+      "id": "F4",
+      "severity": "low",
+      "title": "One malformed assistant line after the anchor disables the estimate for the rest of the turn",
+      "evidence": "usage.py:55-56: an assistant line with usage but no timestamp passes the filter (str(None)='None' > anchor), then d['timestamp'] raises KeyError. A non-numeric token count raises TypeError in _usd (usage.py:73). Either error reaches the except at usage.py:109, cost_state returns None and the figure freezes. Probe M/M2: both return None. The hook still fails open.",
+      "reproduce": "cd CHECKOUT && python3 .review-probes/p2_edges.py | grep '^M'",
+      "file": "scripts/cvcore/usage.py",
+      "line_start": 49,
+      "line_end": 73,
+      "confidence": 0.8,
+      "recommendation": "Skip a bad line inside the loop (require a string timestamp and numeric tokens, or wrap each line in try/except) instead of failing the whole read."
+    },
+    {
+      "id": "F5",
+      "severity": "low",
+      "title": "`compound-v.py usage` prints run_cost_usd without the estimate basis",
+      "evidence": "scripts/cvcore/cli.py:146-148 print run_cost_usd next to the raw usage dicts but no cost_basis, while status, band and brief carry it. The per-session dicts do contain estimated_usd.",
+      "reproduce": "grep -n run_cost_usd scripts/cvcore/cli.py",
+      "file": "scripts/cvcore/cli.py",
+      "line_start": 146,
+      "line_end": 148,
+      "confidence": 0.6,
+      "recommendation": "Add \"cost_basis\": usage.cost_basis(rec) to the usage output."
+    }
+  ]
+}

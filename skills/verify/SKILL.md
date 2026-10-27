@@ -95,7 +95,7 @@ Report to the user:
 - the **outcome** in the first line, then each step's state;
 - review findings still open, and acceptance rows unmet or untested;
 - waivers, quoted, marked "waived by you in chat, not machine-checked";
-- cost: `budget.spent` in USD, labelled "the CLI's estimate", against `budget.limit`, or "unknown" when it is null. Codex time is recorded separately and is not in that figure. Cost is as of the last completed turn: the CLI writes its cost record when a turn ends, so a single-turn `claude -p` run reports it as unknown.
+- cost: `budget.spent` in USD, labelled "the CLI's estimate", against `budget.limit`, or "unknown" when it is null. Codex time is recorded separately and is not in that figure. Claude Code writes its cost record only when a turn ends; inside a turn `compound-v.py` adds the later API requests (main thread and subagents) at cited list prices, and `budget.basis` is then `"estimate"`: say "estimate" with the figure.
 
 Say **done** only when the outcome is `verified`. For incomplete or failed, name the step and the reason. When the run's escalation reasons include `auth` or `payments`, or the depth was `thorough`, suggest the native `/security-review` as an optional extra, not a receipt.
 

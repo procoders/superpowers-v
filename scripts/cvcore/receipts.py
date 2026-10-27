@@ -373,7 +373,7 @@ def budget(rec) -> dict:
     limit, spent = rec.get("budget_usd"), run_cost(rec)
     split, by = rec.get("budget_split") or run.BUDGET_SPLIT, rec.get("usage_by_stage") or {}
     over = [s for s, v in sorted(by.items()) if limit and s in split and v > split[s] * limit]
-    return {"limit": limit, "spent": spent, "known": spent is not None,
+    return {"limit": limit, "spent": spent, "known": spent is not None, "basis": usage.cost_basis(rec),
             "exceeded": spent is not None and bool(limit) and spent > limit,
             "by_stage": by, "stage_exceeded": over}
 

@@ -66,7 +66,7 @@ def _attach(repo, rec, sid, transcript, sd: Path) -> None:
         baseline = float(base.read_text()) if base.exists() else None
     except ValueError:
         pass
-    cs = usage.cost_state(sid, transcript)
+    cs = usage.cost_state(sid, transcript, rec.get("created_at"))
 
     def apply(r):
         if sid not in r.setdefault("sessions", []):
@@ -139,15 +139,17 @@ def _fail_open(repo, hook: str, e: Exception) -> None:
         pass
 
 
-def subagent_stop_hook(payload: dict, repo: Path):
+def subagent_stop_hook(payload: dict, repo: Path, state_dir=None):
     try:
         kind = str(payload.get("agent_type") or "")
         if payload.get("hook_event_name") != "SubagentStop":
             return None
+        rec, sid = run.active(repo, payload.get("session_id")), payload.get("session_id")
+        if rec is not None and sid:  # binds a run started inside this turn, so its cost is seen
+            _attach(repo, rec, sid, payload.get("transcript_path"), Path(state_dir or default_state_dir()))
         if kind.split(":")[-1] != "reviewer":
             _event(repo, {"event": "subagent_stop", "agent_type": kind, "recorded": False})
             return None
-        rec = run.active(repo, payload.get("session_id"))
         if rec is not None:
             note_reviewer_stop(repo, rec, payload.get("agent_id"), kind)
         _event(repo, {"event": "subagent_stop", "agent_type": kind, "recorded": rec is not None})
@@ -253,9 +255,9 @@ def _arm(repo, sd: Path, k: str, transcript) -> None:
         (sd / f"bypass-refused-{k}").unlink()
     base = sd / f"baseline-{k}"
     if not base.exists():
-        total = usage.session_total(transcript)
-        if total is not None:
-            base.write_text(repr(total))
+        cs = usage.cost_state("-", transcript)
+        if cs is not None and not cs["unpriced"]:
+            base.write_text(repr(cs["total_usd"]))
 
 
 def session_hook(payload: dict, repo: Path):

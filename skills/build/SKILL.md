@@ -34,7 +34,7 @@ The builder decides whether to split independent parts across native subagents (
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compound-v.py" status --id <id>
 ```
 
-`status` exits 3 while the run is pending; read the JSON rather than treating the exit code as an error. When `budget.stage_exceeded` lists `build`, tell the builder to finish the current task and stop adding scope. Verification's share is reserved. `spent: null` means the cost is unknown: say so, and carry on. Cost is as of the last completed turn: the CLI writes its cost record when a turn ends, so a single-turn `claude -p` run reports it as unknown.
+`status` exits 3 while the run is pending; read the JSON rather than treating the exit code as an error. When `budget.stage_exceeded` lists `build`, tell the builder to finish the current task and stop adding scope. Verification's share is reserved. `spent: null` means the cost is unknown: say so, and carry on. Claude Code writes its cost record only when a turn ends; inside a turn `compound-v.py` adds the later API requests (main thread and subagents) at cited list prices, and `budget.basis` is then `"estimate"`: say "estimate" with the figure.
 
 ## 4. Hand off
 
