@@ -1,0 +1,66 @@
+{
+  "snapshot": "13362699f795b9e957dcb42e20d3f083e90349d6",
+  "summary": "Ship with fixes. Both items in the request are met: the band is sized to e.props.bodyColumns, its label threshold is exact at -1/exact/+1, and quota moves come in through session.measure, with one usage() read when a run first appears. All 9 tests pass and validate passes. Three medium edge cases remain. The single global 'quota' slot in $.store can be clobbered by a stale measure for the previous run, or by another session, and either one resets the per-run baseline. With empty rateLimits, usage() is still polled at the reader cadence.",
+  "coverage": [
+    "0",
+    "1",
+    "2",
+    "3 skipped: no network surface or identity; the mod reads local state only",
+    "4",
+    "5 skipped: no HTTP methods, forms or uploads in a TUI band mod",
+    "6 skipped: no login or sessions owned by the mod",
+    "7 skipped: no personal data stored or erased",
+    "8 skipped: no public create or lookup endpoint",
+    "9"
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "medium",
+      "title": "A stale session.measure for the previous run overwrites the new run's quota baseline in $.store",
+      "evidence": "hooks/run-band.tsx:186-197 reads the band's run id, then awaits quotaFor(), which at :71-85 replaces any saved slot whose runId differs and writes {runId: <old run>}. If the tick switches the band to run B while that await is pending, B's baseline (written by readQuota at :146) is replaced by A's. The guard at :193 protects only the band atom, not the store. Probe output: after B's step the store held {runId:'run-B', base:{five_hour:50}}; after A's pending measure resolved it held {runId:'run-A', base:{five_hour:45}}; B's next measure at 56 showed '5h +0% → 56%' instead of '+6%'. The interleaving was forced by gating store.get in the probe, which is realistic because store I/O is async and measures fire after every turn, independent of the 5 s tick.",
+      "reproduce": "cd .review-probes/plugin && claude plugin test . 2>&1 | grep 'PROBE race'",
+      "file": "hooks/run-band.tsx",
+      "line_start": 66,
+      "line_end": 88,
+      "confidence": 0.75,
+      "recommendation": "Key the baseline by run (store key `quota:${runId}`) so one run's write can never reset another's. Alternatively, in the measure handler, re-read the band's run after quotaFor's store.get and skip the store.set when it changed."
+    },
+    {
+      "id": "F2",
+      "severity": "medium",
+      "title": "One global 'quota' slot is shared by every session and repo, so concurrent runs keep resetting each other's baseline",
+      "evidence": "$.store is the plugin's own store, one JSON file under the user's config directory, shared between sessions (claude-code.d.ts:3434-3439). hooks/run-band.tsx:71-85 keeps a single {runId, base} under the key 'quota' and resets it whenever runId differs. Two Claude Code sessions with different open runs (two repos, or two sessions in one repo) therefore ping-pong the slot on every measure, and each band shows about +0%. Probe: run-A's baseline was 30; another session wrote {runId:'other-session-run'}; A's measure at 40 showed '5h +0% → 40%' (want '+10%'), and the store was rewritten to base 40. The pattern predates this change, but acceptance row (c) ('per-run baseline in $.store still holds') does not hold under concurrency, and session.measure now triggers the reset on every rate-limit move.",
+      "reproduce": "cd .review-probes/plugin && claude plugin test . 2>&1 | grep 'PROBE cross-session'",
+      "file": "hooks/run-band.tsx",
+      "line_start": 71,
+      "line_end": 85,
+      "confidence": 0.8,
+      "recommendation": "Store baselines per run (key `quota:${runId}`, or a map keyed by run id capped to the last few runs) instead of one slot."
+    },
+    {
+      "id": "F3",
+      "severity": "medium",
+      "title": "With empty rateLimits (off a subscription, or before the first reading), $.session.usage() is still polled at every reader cycle",
+      "evidence": "hooks/run-band.tsx:145-146: isSameRun() requires b.quota.length > 0, so while quota is [] every reader pass calls readQuota() -> $.session.usage(). Probe with rateLimits always []: 25 usage() calls for 25 reader passes in 120 s (one per pass; every 30 s when records are still). With windows present it is 1 call, which is correct. This is the periodic polling that acceptance (b) asked to replace, kept for the no-subscription case. No existing test asserts the usage() call count, so the negative side of (b) is unchecked.",
+      "reproduce": "cd .review-probes/plugin && claude plugin test . 2>&1 | grep 'PROBE usage-calls'",
+      "file": "hooks/run-band.tsx",
+      "line_start": 145,
+      "line_end": 147,
+      "confidence": 0.85,
+      "recommendation": "Track 'quota read for run X' separately from quota.length (e.g. a quotaRun field in the band, or mem.quotaRun) so usage() is read once per run appearance and later changes come only from session.measure. Add a test that counts session.usage calls over several reader cycles."
+    },
+    {
+      "id": "F4",
+      "severity": "low",
+      "title": "After a window reset the delta is measured against the pre-reset baseline, so it shows a misleading small '+'",
+      "evidence": "hooks/run-band.tsx:76-81 never refreshes base[kind] once set; quotaText at :98-103 hides the delta only while now < start. Probe: baseline 40, the window resets to 2, then climbs to 45, and the band shows '5h +5% → 45%' although the run used about 43 points since the reset. resetsAt is available on each window and could detect the reset. This predates the change.",
+      "reproduce": "cd .review-probes/plugin && claude plugin test . 2>&1 | grep 'PROBE after-reset'",
+      "file": "hooks/run-band.tsx",
+      "line_start": 76,
+      "line_end": 81,
+      "confidence": 0.7,
+      "recommendation": "Store resetsAt with each baseline, and re-base a window (or accumulate the pre-reset delta) when the incoming resetsAt differs from the stored one."
+    }
+  ]
+}

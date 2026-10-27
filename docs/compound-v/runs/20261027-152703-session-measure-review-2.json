@@ -1,0 +1,36 @@
+{
+  "snapshot": "8d5a60e4967e5f8923de97940aaa60a340d3a1c4",
+  "summary": "F1, F2 and F3 are fixed: a stale measure for run A no longer touches run B's baseline, another session's keys and the legacy 'quota' slot are ignored, and usage() is read once per run with or without windows (project tests 11/11 pass, validate passes with warnings). The fixes add two small low-severity edge cases: prune can delete the open run's own baseline, and the quota row stays empty when the same run reappears after the band had no run. F4 is still unfixed, by design.",
+  "coverage": [
+    "F1",
+    "F2",
+    "F3",
+    "F4 not re-checked: left unfixed by design"
+  ],
+  "findings": [
+    {
+      "id": "F5",
+      "severity": "low",
+      "title": "prune can delete the open run's own baseline, so the next measurement re-baselines to +0%",
+      "evidence": "hooks/run-band.tsx:93-97 drops the oldest keys from $.store.keys(), and an open run's key never moves to the newest position. Probe 'F2-reg active long-lived run, 20 newer runs from other sessions': adding a new window kind triggers prune, after which quota:run-A is gone (hasA:false). The next measure shows '5h +0% → 40%' where it should show +10%.",
+      "reproduce": "cd .review-probes/plugin && claude plugin test . 2>&1 | grep 'PROBE long-lived'",
+      "file": "hooks/run-band.tsx",
+      "line_start": 93,
+      "line_end": 97,
+      "confidence": 0.7,
+      "recommendation": "In prune, skip the key just written (pass runId and filter it out), or keep the newest 20 counted without the current run."
+    },
+    {
+      "id": "F6",
+      "severity": "low",
+      "title": "Quota row disappears when the same run reappears after the band had no run, until the next rate-limit move",
+      "evidence": "hooks/run-band.tsx:155-161: mem.quotaRun is not cleared when hud is null, so when the same run comes back there is no fresh read, and because b.hud was null the quota becomes []. Probe 'F3-reg after close/reopen' gives t:[] with usage still 1.",
+      "reproduce": "cd .review-probes/plugin && claude plugin test . 2>&1 | grep 'PROBE F3-reg after close'",
+      "file": "hooks/run-band.tsx",
+      "line_start": 155,
+      "line_end": 161,
+      "confidence": 0.5,
+      "recommendation": "Set mem.quotaRun = '' whenever hud is null, so a reappearing run is read once more."
+    }
+  ]
+}

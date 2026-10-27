@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, SessionRateLimit } from 'claude-code'
 
 import type { Band, Hud, Quota, StepMark } from '../types'
 
@@ -32,6 +32,9 @@ const MARK: Record<StepMark, { glyph: string; color: string }> = {
 
 const EMPTY: Band = { hud: null, quota: [], error: null }
 
+const QUOTA_KEY = 'quota:'
+const KEPT_BASELINES = 20
+const QUOTA_TITLE = 'account quota since this run appeared'
 const QUOTA_LABEL: Record<string, string> = { five_hour: '5h', seven_day: '7d', spend_limit: 'spend' }
 
 async function readHud($: EngineInterface, cwd: string): Promise<Hud | null | undefined> {
@@ -59,25 +62,18 @@ async function readHud($: EngineInterface, cwd: string): Promise<Hud | null | un
 }
 
 /**
- * The account's rate-limit windows now, against where they stood when this run was first
- * seen. The baseline lives in `$.store` under the run id, so a restarted session keeps it.
+ * The account's rate-limit windows against where they stood when this run was first seen.
+ * Each run keeps its own baseline in `$.store` (`quota:<run>`), so another session or a late
+ * measurement for an earlier run never resets it, and a restarted session keeps it.
  * These are ACCOUNT windows: anything else running on the account moves them too.
  */
-async function readQuota($: EngineInterface, runId: string): Promise<Quota[]> {
-  let windows: { kind: string; percentUsed: number; resetsAt?: string }[] = []
-  try {
-    windows = (await $.session.usage()).rateLimits
-  } catch {
-    return []
-  }
+async function quotaFor($: EngineInterface, runId: string, windows: SessionRateLimit[]): Promise<Quota[]> {
   if (windows.length === 0) {
     return []
   }
-  let saved = (await $.store.get('quota')) as { runId?: string; base?: Record<string, number> } | undefined
-  if (!saved || saved.runId !== runId || typeof saved.base !== 'object' || saved.base === null) {
-    saved = { runId, base: {} }
-  }
-  const base = saved.base ?? {}
+  const key = `${QUOTA_KEY}${runId}`
+  const saved = await $.store.get(key)
+  const base: Record<string, number> = typeof saved === 'object' && saved !== null ? { ...(saved as Record<string, number>) } : {}
   let hasNew = false
   for (const w of windows) {
     if (typeof base[w.kind] !== 'number') {
@@ -86,10 +82,28 @@ async function readQuota($: EngineInterface, runId: string): Promise<Quota[]> {
     }
   }
   if (hasNew) {
-    await $.store.set('quota', { runId, base })
+    await $.store.set(key, base)
+    await prune($)
   }
 
   return windows.map(w => ({ kind: w.kind, start: base[w.kind] ?? w.percentUsed, now: w.percentUsed, resetsAt: w.resetsAt }))
+}
+
+/** Keeps the newest baselines only; the store is one capped file shared by every session. */
+async function prune($: EngineInterface): Promise<void> {
+  const keys = (await $.store.keys()).filter(k => k.startsWith(QUOTA_KEY))
+  for (const k of keys.slice(0, Math.max(0, keys.length - KEPT_BASELINES))) {
+    await $.store.delete(k)
+  }
+}
+
+/** One read when a run first appears; after that `session.measure` pushes every move. */
+async function readQuota($: EngineInterface, runId: string): Promise<Quota[]> {
+  try {
+    return await quotaFor($, runId, (await $.session.usage()).rateLimits)
+  } catch {
+    return []
+  }
 }
 
 /** `5h +6.5% → 41%`; after a window reset (now below the start) only where it stands. */
@@ -105,7 +119,7 @@ function cost(hud: Hud): string {
 }
 
 // Module variables start over on a hot reload: the next tick re-reads everything.
-const mem = { isBusy: false, mtime: -1, readAt: -IDLE_MS }
+const mem = { isBusy: false, mtime: -1, readAt: -IDLE_MS, quotaRun: '' }
 
 async function step($: EngineInterface): Promise<void> {
   const now = await $.clock.now()
@@ -137,8 +151,16 @@ async function step($: EngineInterface): Promise<void> {
 
     return
   }
-  const quota = hud === null ? [] : await readQuota($, hud.run)
-  await update($, band, () => ({ hud, quota, error: null }))
+  let fresh: Quota[] | undefined
+  if (hud !== null && mem.quotaRun !== hud.run) {
+    mem.quotaRun = hud.run
+    fresh = await readQuota($, hud.run)
+  }
+  await update($, band, b => ({
+    hud,
+    quota: hud === null ? [] : (fresh ?? (b?.hud?.run === hud.run ? b.quota : [])),
+    error: null,
+  }))
 }
 
 /** `CV_DISABLED_HOOKS=run-band` turns the band off, like any other Compound V hook. */
@@ -177,6 +199,22 @@ export const register: Register = on => {
     return next(e)
   })
 
+  on('session.measure', async ($, e, next) => {
+    if (e.changed.includes('rateLimits')) {
+      try {
+        const run = (await read($, band))?.hud?.run
+        if (run !== undefined) {
+          const quota = await quotaFor($, run, e.rateLimits)
+          await update($, band, b => (b !== null && b.hud?.run === run ? { ...b, quota } : b))
+        }
+      } catch {
+        // a missed reading is replaced by the next one
+      }
+    }
+
+    return next(e)
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const b = await read($, band)
     const beneath = await next(e)
@@ -185,10 +223,11 @@ export const register: Register = on => {
     }
     const { Box, Text } = $.ui.resolve(e)
     const hud = b.hud
+    const width = e.props.bodyColumns
     const steps = Object.entries(hud.steps)
     const waived = steps.filter(([, m]) => m === 'waived').map(([s]) => s)
     const rows = [
-      <Box flexDirection="row" columnGap={1}>
+      <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
         <Text bold color={C.brand}>
           V
         </Text>
@@ -217,13 +256,17 @@ export const register: Register = on => {
       )
     }
     if (b.quota.length > 0) {
+      const texts = b.quota.map(quotaText)
+      const room = width - 2 - texts.reduce((n, t) => n + t.length + 2, 0)
       rows.push(
         <Box flexDirection="row" justifyContent="space-between" columnGap={2}>
-          <Text dimColor>account quota since this run appeared</Text>
+          <Text dimColor wrap="truncate-end">
+            {room >= QUOTA_TITLE.length ? QUOTA_TITLE : 'quota'}
+          </Text>
           <Box flexDirection="row" columnGap={2}>
-            {b.quota.map(q => (
+            {b.quota.map((q, i) => (
               <Text color={q.now >= 95 ? C.bad : q.now >= 80 ? C.warn : undefined} dimColor={q.now < 80}>
-                {quotaText(q)}
+                {texts[i]}
               </Text>
             ))}
           </Box>
@@ -233,7 +276,7 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
-        <Box flexDirection="column" paddingX={1}>
+        <Box flexDirection="column" paddingX={1} width={width}>
           {rows}
         </Box>
         {beneath}
