@@ -66,10 +66,56 @@ treat the Pro figure as an upper estimate. On Pro the run may hit the 5-hour lim
 | Repeated fake bookings, one source | **Limited.** 10 bookings per network per 10 minutes, then "We received many booking attempts from your connection". A spoofed earlier `X-Forwarded-For` entry does not give a new identity; a customer from another network books normally. Limits are in memory, so a restart resets them; one source can still take about 60 slots an hour (a stylist's whole day in about 20 minutes) |
 | A bad cookie | **Refused, no 500.** Garbage, empty, 4 KB, tampered, reversed and non-ASCII cookies on five admin routes, and a tampered cookie on an admin form submit: all sent to login (export 401), no 5xx |
 
-Not yet done: the same three checks against a plain Claude Code build of this brief.
+The same checks on two plain Claude Code builds: next section.
+
+## Against plain Claude Code on the same brief (2026-10-27)
+
+Two plain builds on the same bench (Claude Code 2.1.306, `claude-opus-5-5`, no plugin, `run-settings-v4.json`, a repo
+holding only `prd.md`), the same method as our earlier plain runs:
+
+- **SP, job post only.** One turn, "Build the app described in prd.md."
+- **SA, job post with the client's answers appended.** "…including the owner's answers at the end." The first turn
+  stopped to ask about the blocked Prisma download; it got the owner sheet's standard reply ("Your call — keep it simple
+  and tell me what you chose.") and finished in a second turn.
+
+All three were judged **blind** by Codex (gpt-6-astra, reasoning high) against the full brief (post plus answers),
+with labels shuffled between sets: the product rubric twice, the feature census twice, and the product/UX review
+twice on screenshots of each running app. Sets and mappings: `~/Dev/cv-salon-e2e-kit/bsum-*` and `ux-sum-*`.
+
+| | Plain, post only (SP) | Plain, post + answers (SA) | **Compound V 4.0.0** |
+|---|---|---|---|
+| Cost (Claude Code's figure) | $2.20 | $5.64 | **$32.14** (≈ $19 to the first verified app) |
+| Time | 6 min | 20 min (2 turns) | **84 min** (55 min to the first verified app) |
+| Rubric, blind ×2 (0–100) | 50, 46 | 59, 56 | **79, 75** |
+| Security & privacy (rubric, of 5) | 3, 3 | 2, 1 | **4, 4** |
+| Capabilities present (census ×2) | 60, 61 | 57, 58 | **88, 84** |
+| Capabilities considered, level ≥ 2 | 43, 42 | 40, 48 | **79, 83** |
+| Product & UX, blind ×2 (0–100) | 51, 51 | 68, 68 | **74, 74** |
+| Sumit's three checks | 2 of 3 | 1 of 3 | **3 of 3** |
+
+Sumit's three checks on the plain builds (production start, run by us; logs in `logs/cv-v4-run-SP/` and
+`logs/cv-v4-run-SA/`):
+
+- **SP.** Session after logout refused; bad cookies refused, no 500. Fake bookings are limited to 10 per 15 minutes,
+  but the app reads the client-written first `X-Forwarded-For` entry, so rotating it booked 10 more until the stylist's
+  day was full.
+- **SA.** Bad cookies refused, no 500. A cookie copied before sign-out still opens the admin pages (a stateless signed
+  token; sign-out only clears the browser's copy), and 20 of 25 fake bookings from one address went through with no
+  limit at all.
+
+What the judges credited to Compound V: days off and salon closures that remove availability, booking search and
+corrections, outcome reminders, history that survives catalogue edits, retention and erasure, backups and a restore
+procedure, session revocation and booking throttles. The ordinary customer booking flow is close in all three.
+
+What they held against it: the seed has **five sample services where the client asked for six** (both rubric judges,
+confirmed in `src/lib/seed.ts`), and hand-made garbled server-action posts still get a 500. SP ignored the stack the
+client named (it saw only the post) and keeps Fridays open; SA matches the brief most literally but has no stylist days
+off, no booking throttle and a session that survives logout.
 
 ## Defects we found that the run did not
 
+- **Five sample services instead of six.** The client asked for 4 stylists and 6 services; `src/lib/seed.ts`
+  creates five. Found by both blind rubric judges.
 - **`npm run db:seed` ignores `.env`.** `scripts/migrate.ts` loads `.env`, `prisma/seed.ts` does not, so on a fresh
   server the documented install (`DEPLOY.md` §1) fails at the seed step with "Cannot open database because the
   directory does not exist". Workaround: export the `.env` values first.

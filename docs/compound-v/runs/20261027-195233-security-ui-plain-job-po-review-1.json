@@ -1,0 +1,32 @@
+{
+  "snapshot": "9a1c79989682d22204ec9e9777218942b04f9608",
+  "summary": "The new section meets the request. I checked every number in the comparison table against the judge JSON lines and the mappings: rubric 50/46, 59/56, 79/75; security 3/3, 2/1, 4/4; census present and considered; UX 51/51, 68/68, 74/74. Cost and time match turn-N.json and wall.txt. The prompts match turn-N.user.txt and owner-driver.md, and the security bullets match security-checks.txt. One fairness gap remains: the SP X-Forwarded-For bypass only applies with TRUST_PROXY=1, which the probe turned on, and the doc does not say so.",
+  "coverage": [
+    "0",
+    "1 skipped: docs-only change",
+    "2 skipped: docs-only change",
+    "3 skipped: docs-only change",
+    "4 skipped: docs-only change",
+    "5 skipped: docs-only change",
+    "6 skipped: docs-only change",
+    "7 skipped: docs-only change",
+    "8 skipped: docs-only change",
+    "9 skipped: docs-only change",
+    "spot-check: cv-v4-run-sumit/src/lib/seed.ts has 5 svc() calls (lines 10-14)",
+    "spot-check: cv-v4-run-SA/lib/auth.ts:25 logout only deletes the cookie; cv-v4-run-SP/src/server.js:52-53 XFF first entry only when trustProxy"
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "low",
+      "title": "SP's booking-throttle failure depends on TRUST_PROXY=1, which the probe turned on, and the doc omits this",
+      "evidence": "docs/v4/sumit-run.md:99-101 says SP 'reads the client-written first X-Forwarded-For entry'. ~/Dev/cv-salon-e2e-kit/logs/cv-v4-run-SP/security-checks.txt line 1 shows the check ran with NODE_ENV=production TRUST_PROXY=1, and ~/Dev/cv-v4-run-SP/src/server.js:52-53 reads XFF only when trustProxy is set (default false). The SP README:25 says to set it behind a proxy, so the config is defensible. But a skeptical reader could argue that the '2 of 3' for SP rests on a setting the probe enabled.",
+      "reproduce": "head -3 ~/Dev/cv-salon-e2e-kit/logs/cv-v4-run-SP/security-checks.txt; sed -n 52,53p ~/Dev/cv-v4-run-SP/src/server.js",
+      "file": "docs/v4/sumit-run.md",
+      "line_start": 99,
+      "line_end": 101,
+      "confidence": 0.85,
+      "recommendation": "Add 'with TRUST_PROXY=1, as its README says to set behind a proxy' to the SP bullet."
+    }
+  ]
+}
