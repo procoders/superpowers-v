@@ -115,7 +115,7 @@ function quotaText(q: Quota): string {
 }
 
 function cost(hud: Hud): string {
-  return hud.cost_usd === null ? '$?' : `$${hud.cost_usd.toFixed(2)}`
+  return hud.cost_usd === null ? '$?' : `${hud.cost_basis === 'estimate' ? '~' : ''}$${hud.cost_usd.toFixed(2)}`
 }
 
 // Module variables start over on a hot reload: the next tick re-reads everything.

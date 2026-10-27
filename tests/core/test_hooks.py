@@ -124,7 +124,8 @@ class HooksTest(unittest.TestCase):
         t0 = time.monotonic()
         self.assertEqual("block", self.stop(transcript=str(t))["decision"])
         self.assertLess(time.monotonic() - t0, 7)
-        self.assertEqual({}, self.load(rec)["usage"])
+        # The cost-state 18 MB back is still found (review F2), well inside the hook's budget.
+        self.assertEqual(1.0, self.load(rec)["usage"]["s1"]["last_usd"])
 
     def test_stop_records_usage(self):
         rec = self.start()
@@ -349,15 +350,33 @@ class HooksTest(unittest.TestCase):
         rec = self.start()
         for kind in ("Explore", "compound-v:spec-reviewer", "compound-v:reviewer"):
             hooks.subagent_stop_hook({"hook_event_name": "SubagentStop", "session_id": "s1",
-                                      "agent_id": "a-" + kind, "agent_type": kind}, self.repo)
+                                      "agent_id": "a-" + kind, "agent_type": kind}, self.repo,
+                                     state_dir=self.state)
         stops = self.load(rec)["reviewer_stops"]
         self.assertEqual(["compound-v:reviewer"], [s["agent_type"] for s in stops])
+
+    def test_subagent_stop_binds_a_run_started_inside_the_turn(self):
+        # One long `claude -p` turn: no prompt or Stop hook fires between `run start` and the
+        # builder's return, so the SubagentStop hook is what lets status price the turn so far.
+        rec = self.start(session=None)
+        t = self.tmp / "t.jsonl"
+        t.write_text(json.dumps({"type": "assistant", "timestamp": "9999-01-01T00:00:00.000Z",
+                                 "message": {"id": "m1", "model": "claude-opus-5-5",
+                                             "usage": {"output_tokens": 50_000}}}) + "\n")
+        hooks.subagent_stop_hook({"hook_event_name": "SubagentStop", "session_id": "s1",
+                                  "transcript_path": str(t), "agent_type": "compound-v:builder"},
+                                 self.repo, state_dir=self.state)
+        u = self.load(rec)["usage"]["s1"]
+        self.assertEqual((["s1"], 1.0), (self.load(rec)["sessions"], u["estimated_usd"]))
+        self.assertEqual((1.0, "estimate"), (receipts.usage.run_cost(self.load(rec)),
+                                             receipts.usage.cost_basis(self.load(rec))))
 
     def test_subagent_stop_logged(self):
         self.start()
         for kind in ("Explore", "compound-v:reviewer"):
             hooks.subagent_stop_hook({"hook_event_name": "SubagentStop", "session_id": "s1",
-                                      "agent_id": "a", "agent_type": kind}, self.repo)
+                                      "agent_id": "a", "agent_type": kind}, self.repo,
+                                     state_dir=self.state)
         rows = [json.loads(x) for x in
                 (self.repo / "docs/compound-v/runs/triage.log").read_text().splitlines()]
         self.assertEqual([("Explore", False), ("compound-v:reviewer", True)],

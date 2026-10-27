@@ -5,7 +5,7 @@ from collections import Counter
 from .gitio import git, zsplit
 from .receipts import status
 from .run import active
-from .usage import run_cost
+from .usage import cost_basis, run_cost
 
 NEXT = {"brainstorm": "brainstorm", "preflight": "build", "plan": "build", "build": "build",
         "verify": "verify"}
@@ -27,7 +27,7 @@ def band(repo, session_id=None) -> dict:
     s = status(repo, rec)
     return {"run": rec["id"], "stage": rec["stage"], "tier": rec["tier"], "steps": _steps(s),
             "review_round": rec["review_round"], "outcome": s["outcome"],
-            "cost_usd": run_cost(rec)}
+            "cost_usd": run_cost(rec), "cost_basis": cost_basis(rec)}
 
 
 def brief(repo, session_id=None) -> str:
@@ -40,7 +40,8 @@ def brief(repo, session_id=None) -> str:
         if steps:
             parts.append(f"{mark} {', '.join(steps)}")
     if b["cost_usd"] is not None:
-        parts.append(f"cost ${b['cost_usd']:.2f}")
+        parts.append(f"cost ~${b['cost_usd']:.2f} (estimate)" if b["cost_basis"] == "estimate"
+                     else f"cost ${b['cost_usd']:.2f}")
     nxt = NEXT.get(b["stage"], "verify")
     if b["stage"] == "build" and b["tier"] == "light":
         nxt = "verify"

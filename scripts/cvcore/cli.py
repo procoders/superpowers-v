@@ -145,7 +145,7 @@ def cmd_status(a, repo):
 def cmd_usage(a, repo):
     rec = usage.record(repo, _pick(repo, a), a.session, a.transcript)
     _out({"usage": rec.get("usage"), "usage_by_stage": rec.get("usage_by_stage"),
-          "run_cost_usd": usage.run_cost(rec)})
+          "run_cost_usd": usage.run_cost(rec), "cost_basis": usage.cost_basis(rec)})
 
 
 def cmd_hud(a, repo):

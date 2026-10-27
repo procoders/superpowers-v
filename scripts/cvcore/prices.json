@@ -1,0 +1,26 @@
+{
+  "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+  "read_on": "2026-10-27",
+  "use": "Prices only the API requests made after the CLI's last cost-state entry, reported as an estimate. A model missing here leaves the run's cost unknown.",
+  "columns": "USD per million tokens: base input, 5m cache write, 1h cache write, cache hit, output",
+  "web_search_usd": 0.01,
+  "models": {
+    "claude-fable-5-1": [10, 12.5, 20, 0.25, 50],
+    "claude-mythos-5-1": [10, 12.5, 20, 0.25, 50],
+    "claude-fable-5": [10, 12.5, 20, 1, 50],
+    "claude-mythos-5": [10, 12.5, 20, 1, 50],
+    "claude-opus-5-5": [4, 5, 8, 0.2, 20],
+    "claude-opus-5": [5, 6.25, 10, 0.5, 25],
+    "claude-opus-4-8": [5, 6.25, 10, 0.5, 25],
+    "claude-opus-4-7": [5, 6.25, 10, 0.5, 25],
+    "claude-opus-4-6": [5, 6.25, 10, 0.5, 25],
+    "claude-sonnet-5-5": [2, 2.5, 4, 0.1, 10],
+    "claude-sonnet-5": [2, 2.5, 4, 0.2, 10],
+    "claude-sonnet-4-6": [3, 3.75, 6, 0.3, 15],
+    "claude-haiku-5-5": [0.1, 0.125, 0.2, 0.01, 0.5],
+    "claude-haiku-4-5": [1, 1.25, 2, 0.1, 5]
+  },
+  "long_prompt": {
+    "claude-haiku-5-5": {"over_tokens": 100000, "prices": [0.5, 0.625, 1, 0.05, 2.5]}
+  }
+}

@@ -7,10 +7,14 @@ states it.
 
 - Never print a cost, time, token or savings number that was not measured. Every number in a doc
   names its source; the salon numbers come only from `docs/v4/salon-report.md`.
-- Dollar figures come only from the Claude Code CLI's own cost record (`cost-state` entries in the
-  session transcript) and are labelled "the CLI's estimate". (`scripts/cvcore/usage.py:8-20`)
-- Absent stays absent: when any session's cost is unknown, the run's cost is `null`, never a
-  substituted zero. (`scripts/cvcore/usage.py:106-110`)
+- Dollar figures come from the Claude Code CLI's own cost record (`cost-state` entries in the
+  session transcript) and are labelled "the CLI's estimate". (`scripts/cvcore/usage.py:15-35`)
+- The CLI writes `cost-state` only when a turn ends, so the API responses after the last one (main
+  thread and `subagents/agent-*.jsonl`) are priced at the list prices cited in
+  `scripts/cvcore/prices.json` and the figure is labelled an estimate (`basis: "estimate"`, `~$`)
+  until the next `cost-state` replaces it. (`scripts/cvcore/usage.py:55-71`)
+- Absent stays absent: when any session's cost is unknown, or a response's model is not in the
+  price list, the run's cost is `null`, never a substituted zero. (`scripts/cvcore/usage.py:126-130`)
 - CI greps `scripts/` and `docs/` for claimed-savings phrasing and fails on a hit.
 
 ## Model policy
@@ -28,7 +32,7 @@ states it.
 - Receipts, outcomes, scope verdicts and usage are written by `scripts/compound-v.py` from real
   command results. Receipts are HMAC-signed with a machine key. (`scripts/cvcore/receipts.py:21`)
 - Run records under `docs/compound-v/runs/` are never edited by hand; the guard hook denies
-  Write/Edit there. (`scripts/cvcore/hooks.py:289`)
+  Write/Edit there. (`scripts/cvcore/hooks.py:291`)
 - Command output kept in a receipt is capped at the last 20 lines. (`scripts/cvcore/receipts.py:138-139`)
 
 ## Hooks fail open
