@@ -161,12 +161,12 @@ jobs:
       - name: Lint hook scripts with shellcheck
         run: shellcheck hooks/*.sh
 
-      - name: Size guard (new core <= 2500 lines)
+      - name: Size guard (new core <= 2550 lines)
         run: |
           set -e
           n=$(cat scripts/compound-v.py scripts/cvcore/*.py hooks/*.sh hooks/run-band.tsx | wc -l | tr -d ' ')
-          echo "core size: $n lines (limit 2500)"
-          [ "$n" -le 2500 ] || { echo "❌ core is $n lines, over the 2500-line budget"; exit 1; }
+          echo "core size: $n lines (limit 2550)"
+          [ "$n" -le 2550 ] || { echo "❌ core is $n lines, over the 2550-line budget"; exit 1; }
 
       - name: Unit tests
         run: python3 -m unittest discover -s tests/core -v

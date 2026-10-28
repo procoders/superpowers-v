@@ -164,7 +164,7 @@ def update(repo, rec, fn) -> dict:
     return fresh
 
 
-def _open_runs(repo) -> list:
+def _open_runs(repo, outcomes=(None,)) -> list:
     runs = []
     for p in _dir(repo).glob("*.json"):
         try:
@@ -172,7 +172,7 @@ def _open_runs(repo) -> list:
         except (OSError, ValueError):
             continue
         if isinstance(rec, dict) and rec.get("id") == p.stem and "stage" in rec \
-                and rec.get("outcome") is None:
+                and rec.get("outcome") in outcomes:
             runs.append(rec)
     return sorted(runs, key=lambda r: (str(r.get("created_at", "")), r["id"]), reverse=True)
 
@@ -192,6 +192,11 @@ def active(repo, session_id=None):
         if not rec.get("sessions"):
             return rec
     return None
+
+
+def reopenable(repo, session_id):  # this session's run, even one closed early by the Stop hook; never a verified one
+    runs = _open_runs(repo, (None, "incomplete", "failed")) if session_id else []
+    return next((r for r in runs if session_id in r.get("sessions", [])), None)
 
 
 def bind(repo, rec: dict, session_id) -> dict:

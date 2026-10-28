@@ -173,6 +173,27 @@ class ReceiptsTest(Base):
         self.assertEqual([("good", True, "transcript")],
                          [(s["agent_id"], s["consumed"], s["source"]) for s in stops])
 
+    def test_background_reviewer_handback_counts_as_finished(self):
+        self.steps()
+        rec = self.reload()
+        rec["transcripts"] = {"s1": str(self.tmp / "proj/s1.jsonl")}
+        run.save(self.repo, rec)
+        receipts.note_checkout(self.repo, self.reload(), snapshot.tree(self.repo), self.tmp / "co")
+        base = self.tmp / "proj/s1"
+        self.subagent(base, aid="bg")
+        sub = base / "subagents"
+        handback = {"type": "user", "timestamp": "2099-01-01T00:00:00.000Z",
+                    "message": {"content": [{"type": "tool_result",
+                                             "content": "Report delivered to your caller."}]}}
+        with open(sub / "agent-bg.jsonl", "a") as f:
+            f.write(json.dumps(handback) + "\n")
+        (sub / "agent-bg.jsonl").write_text(
+            (sub / "agent-bg.jsonl").read_text().replace("end_turn", "tool_use"))
+        for finished, expect in ((False, "error"), (True, "pass")):
+            (sub / "agent-bg.meta.json").write_text(
+                json.dumps({"agentType": "compound-v:reviewer", "finished": finished}))
+            self.assertEqual(expect, self.review(checkout=False, stop=False)["result"])
+
     def test_reviewer_found_via_projects_dir(self):
         import os
         self.steps()

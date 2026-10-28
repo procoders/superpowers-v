@@ -1,0 +1,22 @@
+{
+  "snapshot": "6e828de5094268e3b98006cfc86eeed8fe4d726a",
+  "summary": "F2 is fixed. With a missing, None or empty session_id, nothing is recorded anywhere, and reopenable guards a falsy session. Most of F1 is fixed: a session's open bound run now gets the cost binding and the reviewer stop (P2c), a verified run never gets a stop, and in the real review flow the stop follows the newest checkout. One part of F1 remains. When the session has an earlier closed run, a run started inside the turn still gets no cost binding, and without a checkout its reviewer stop goes to the old run (P2d). That case falls outside the stated acceptance rows. Full tests/core passes (165 tests), and so do the 7 subagent tests. F2 was re-checked with P2a, P2b and the RF2 regression (session_id empty string) and is closed, so it is not listed.",
+  "coverage": [
+    "F1",
+    "F2"
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "medium",
+      "title": "Partly fixed: a run started inside the turn still gets no cost binding when the session has an earlier closed run",
+      "evidence": "scripts/cvcore/hooks.py:148-151 calls _attach only when `bound or own is None`. In P2d, s1 has an old incomplete run, so reopenable returns it. The new unbound run started inside the turn is `live` and is skipped. Probe output: 'P2d builder stop: new run sessions=[] usage={}'. Without a checkout, the reviewer stop also goes to the old run, because the key's tie-breaker `r is own or bound` favours own: 'P2d reviewer stop: new run stops=[] old run stops=[rev-for-new]'. In the real flow, where the new run has a checkout, the stop lands correctly (RF1a: new stops=['rev']), but the cost is still not bound (new usage=False). Fixed cases: P2c (the open bound run gets usage and the stop), RF1b (the stop never lands on s2's run, even when s2's checkout is newer), RF1c (never on a verified run). The skip looks deliberate, to avoid claiming an unbound run that may belong to another session. That trade-off means 8bae3e2's in-turn cost is lost whenever the session already has an incomplete or failed run.",
+      "reproduce": "cd /private/var/folders/gj/v1s49xyj4pz1n8_3dmf4zml80000gn/T/tmp.gDHIj6H9mY/tree && python3 -I .review-probes/probe_subagent.py | grep P2d; python3 -I .review-probes/probe_r2.py | grep RF1a",
+      "file": "scripts/cvcore/hooks.py",
+      "line_start": 148,
+      "line_end": 157,
+      "confidence": 0.75,
+      "recommendation": "Also bind `live` when the session's own run is closed (own.get('outcome') is not None) and live was created after it: `own is None or (own.get('outcome') and str(live.get('created_at','')) > str(own.get('created_at','')))`. Or accept the trade-off and document it in a comment. Add a P2d test either way."
+    }
+  ]
+}

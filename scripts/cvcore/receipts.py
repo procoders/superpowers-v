@@ -326,7 +326,8 @@ def _reviewer_transcript(repo, rec, issued):
     used = {s.get("agent_id") for s in rec.get("reviewer_stops", []) if s.get("consumed")}
     for meta in (m for d in _subagent_dirs(repo, rec) for m in sorted(d.glob("agent-*.meta.json"))):
         try:
-            kind = str(json.loads(meta.read_text(encoding="utf-8"))["agentType"])
+            info = json.loads(meta.read_text(encoding="utf-8"))
+            kind = str(info["agentType"])
             aid = meta.name[len("agent-"):-len(".meta.json")]
             if kind.split(":")[-1] != "reviewer" or aid in used:
                 continue
@@ -336,8 +337,12 @@ def _reviewer_transcript(repo, rec, issued):
                 tail = f.read().rstrip(b"\n").rsplit(b"\n", 1)[-1]
             started = _ts(json.loads(body.split(b"\n", 1)[0])["timestamp"])
             last = json.loads(tail)
-            if last.get("type") != "assistant" or \
-                    last.get("message", {}).get("stop_reason") not in ("end_turn", "stop_sequence"):
+            ended = last.get("type") == "assistant" and \
+                last.get("message", {}).get("stop_reason") in ("end_turn", "stop_sequence")
+            # a background subagent ends with the SubagentHandback tool result, not an end_turn
+            handed_back = info.get("finished") is True and last.get("type") == "user" \
+                and b"Report delivered" in tail
+            if not (ended or handed_back):
                 continue
             for c in issued:
                 dest = str(c["dest"])

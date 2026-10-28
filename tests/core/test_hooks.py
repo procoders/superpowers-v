@@ -371,6 +371,58 @@ class HooksTest(unittest.TestCase):
         self.assertEqual((1.0, "estimate"), (receipts.usage.run_cost(self.load(rec)),
                                              receipts.usage.cost_basis(self.load(rec))))
 
+    def test_subagent_stop_records_on_run_closed_incomplete(self):
+        rec = self.start()
+        run.update(self.repo, rec, lambda r: r.update(outcome="incomplete"))
+        self.start(session="s2")
+        unbound = self.start(session=None)
+        done = self.start(session="s3")
+        run.update(self.repo, done, lambda r: r.update(outcome="verified"))
+        for sid in ("s1", "s3", "s4"):
+            hooks.subagent_stop_hook({"hook_event_name": "SubagentStop", "session_id": sid,
+                                      "agent_id": "a-" + sid,
+                                      "agent_type": "compound-v:reviewer"}, self.repo)
+        self.assertEqual(["a-s1"], [s["agent_id"] for s in self.load(rec)["reviewer_stops"]])
+        self.assertEqual("incomplete", self.load(rec)["outcome"])
+        self.assertNotIn("reviewer_stops", self.load(done))
+        self.assertNotIn("a-s1", [s["agent_id"] for s in self.load(unbound)["reviewer_stops"]])
+
+    def test_subagent_stop_prefers_the_sessions_open_run_over_a_newer_closed_one(self):
+        live = self.start()
+        closed = self.start()
+        run.update(self.repo, closed, lambda r: r.update(outcome="incomplete"))
+        t = self.tmp / "t.jsonl"
+        t.write_text(json.dumps({"type": "assistant", "timestamp": "9999-01-01T00:00:00.000Z",
+                                 "message": {"id": "m1", "model": "claude-opus-5-5",
+                                             "usage": {"output_tokens": 50_000}}}) + "\n")
+        for kind in ("compound-v:builder", "compound-v:reviewer"):
+            hooks.subagent_stop_hook({"hook_event_name": "SubagentStop", "session_id": "s1", "agent_id": "a1",
+                                      "transcript_path": str(t), "agent_type": kind}, self.repo, state_dir=self.state)
+        self.assertEqual(["a1"], [s["agent_id"] for s in self.load(live)["reviewer_stops"]])
+        self.assertEqual(1.0, self.load(live)["usage"]["s1"]["estimated_usd"])
+        self.assertNotIn("reviewer_stops", self.load(closed))
+
+    def test_subagent_stop_goes_to_the_run_with_the_newest_checkout(self):
+        closed = self.start()
+        run.update(self.repo, closed, lambda r: r.update(outcome="incomplete"))
+        fresh = self.start(session=None)
+        run.update(self.repo, fresh, lambda r: r.update(checkouts=[{"tree": "t", "at": "2099-01-01T00:00:00+00:00"}]))
+        hooks.subagent_stop_hook({"hook_event_name": "SubagentStop", "session_id": "s1", "agent_id": "a1",
+                                  "agent_type": "compound-v:reviewer"}, self.repo, state_dir=self.state)
+        self.assertEqual(["a1"], [s["agent_id"] for s in self.load(fresh)["reviewer_stops"]])
+        self.assertNotIn("reviewer_stops", self.load(closed))
+
+    def test_subagent_stop_without_a_session_records_nothing(self):
+        other = self.start(session="s2")
+        loose = self.start(session=None)
+        run.update(self.repo, loose, lambda r: r.update(sessions=[None]))
+        for payload in ({}, {"session_id": None}, {"session_id": ""}):
+            hooks.subagent_stop_hook({"hook_event_name": "SubagentStop", "agent_id": "a1",
+                                      "agent_type": "compound-v:reviewer", **payload}, self.repo, state_dir=self.state)
+        self.assertNotIn("reviewer_stops", self.load(other))
+        self.assertNotIn("reviewer_stops", self.load(loose))
+        self.assertIsNone(run.reopenable(self.repo, None))
+
     def test_subagent_stop_logged(self):
         self.start()
         for kind in ("Explore", "compound-v:reviewer"):

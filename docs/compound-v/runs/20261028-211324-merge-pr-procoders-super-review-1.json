@@ -1,0 +1,42 @@
+{
+  "snapshot": "c00bd68f3193b861e9189cd30d87d35b9112bd14",
+  "summary": "The merge works on the main paths. Both #24 tests and 8bae3e2's in-turn binding test pass, the full tests/core suite is green, the core is 2510 lines (cap 2550), and every current cap statement (CONVENTIONS.md, AGENTS.md, .claude/rules/scripts.md, validate.yml) says 2550. Two acceptance rows still fail on edge cases. Because `own = run.reopenable()` also returns closed runs, a session's closed run wins over its open run or an in-turn run: the cost binding is skipped and the reviewer stop goes to the wrong run. A SubagentStop with no session_id puts the reviewer stop on another session's run. Web probes 3-9 were skipped at the caller's direction (this is a CLI/hook change).",
+  "coverage": [
+    "0",
+    "1",
+    "2",
+    "3 skipped: no web routes or identities; hook/CLI change only (caller directed)",
+    "4 skipped: no HTTP routes or forms (caller directed)",
+    "5 skipped: no production start or config secrets in this change",
+    "6 skipped: no login sessions",
+    "7 skipped: no personal data",
+    "8 skipped: no normalisers touched",
+    "9 skipped: no user accounts or roles"
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "medium",
+      "title": "A session's closed run wins over its open run: cost binding skipped and reviewer stop misfiled",
+      "evidence": "scripts/cvcore/hooks.py:148-154 computes own = run.reopenable(repo, sid). reopenable (scripts/cvcore/run.py:197-198) returns the newest run bound to the session, open, incomplete or failed. _attach is then skipped whenever own != rec, and the reviewer stop goes to `own or rec`. Probe output (.review-probes/probe_subagent.out). P2c: session s1 is bound to an older OPEN run and a newer run the Stop hook closed incomplete. run.active(s1) is the open run, yet a builder SubagentStop leaves its usage={} and transcripts=None, and the reviewer stop meant for it lands on the closed run. This breaks the acceptance row 'the cost binding still happens for a session's own open bound run'. P2d: s1 has an old incomplete run and starts a new run inside the turn (run start never binds a session, cli.py:50-51). The builder stop leaves the new run with sessions=[] and usage={}, which undoes 8bae3e2's fix whenever an earlier run exists, and the reviewer stop lands on the old run. So `review record` on the new run would again fail with 'no reviewer run recorded', the bug #24 fixed. The reviewer-stop half is inherited from #24 (its `reopenable() or active()` has the same priority). The skipped cost binding is new in this merge.",
+      "reproduce": "cd $CHECKOUT && python3 -I .review-probes/probe_subagent.py | grep -E 'P2c|P2d'",
+      "file": "scripts/cvcore/hooks.py",
+      "line_start": 148,
+      "line_end": 154,
+      "confidence": 0.85,
+      "recommendation": "Let the open run win, and fall back to a closed one only when the session has no open run. For example: `rec = run.active(repo, sid); own = run.reopenable(repo, sid)`, then `target = rec if rec is not None and (sid in rec.get('sessions', []) or own is None or str(rec.get('created_at','')) > str(own.get('created_at',''))) else own`. Run _attach only when target is rec, and send the reviewer stop to target. Add tests for P2c and P2d."
+    },
+    {
+      "id": "F2",
+      "severity": "medium",
+      "title": "SubagentStop with no or None session_id records the reviewer stop on another session's run (and the merge dropped #24's None guard)",
+      "evidence": "In scripts/cvcore/hooks.py:147-156, with sid None, run.active(repo, None) (run.py:186-187) returns the newest open run of ANY session, and note_reviewer_stop writes to it. Probe P2a: a payload with session_id missing or null adds reviewer_stops ['a1'] to a run bound only to s2. This breaks the acceptance row 'a reviewer stop never lands ... on another session's run'. The behaviour is inherited from both parents. Separately, #24's reopenable began with `if session_id is None: return None`. The one-line merged version (run.py:198) has no such guard, so reopenable(repo, None) matches any run whose sessions list holds None (probe P2b: matched, and the stop was recorded there). Claude Code normally sends a session_id, so this needs a malformed payload or record.",
+      "reproduce": "cd $CHECKOUT && python3 -I .review-probes/probe_subagent.py | grep -E 'P2a|P2b'",
+      "file": "scripts/cvcore/run.py",
+      "line_start": 197,
+      "line_end": 198,
+      "confidence": 0.9,
+      "recommendation": "Restore the guard in reopenable (`if not session_id: return None`). In subagent_stop_hook, return early without recording a reviewer stop when sid is falsy, or call run.active only with a truthy sid. Add a test with a missing session_id."
+    }
+  ]
+}

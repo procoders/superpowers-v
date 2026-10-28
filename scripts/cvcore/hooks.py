@@ -144,12 +144,17 @@ def subagent_stop_hook(payload: dict, repo: Path, state_dir=None):
         kind = str(payload.get("agent_type") or "")
         if payload.get("hook_event_name") != "SubagentStop":
             return None
-        rec, sid = run.active(repo, payload.get("session_id")), payload.get("session_id")
-        if rec is not None and sid:  # binds a run started inside this turn, so its cost is seen
-            _attach(repo, rec, sid, payload.get("transcript_path"), Path(state_dir or default_state_dir()))
+        sid = payload.get("session_id")
+        live, own = (run.active(repo, sid), run.reopenable(repo, sid)) if sid else (None, None)
+        bound = live is not None and sid in live.get("sessions", [])  # read before _attach adds the session
+        if live is not None and (bound or own is None):  # binds a run started inside this turn, so its cost is seen
+            _attach(repo, live, sid, payload.get("transcript_path"), Path(state_dir or default_state_dir()))
         if kind.split(":")[-1] != "reviewer":
             _event(repo, {"event": "subagent_stop", "agent_type": kind, "recorded": False})
             return None
+        # the reviewer works on the newest checkout; without one the session's own run (even one the Stop hook closed) wins
+        rec = max((r for r in (live, own) if r is not None), default=None, key=lambda r: (
+            max((str(c.get("at", "")) for c in r.get("checkouts", [])), default=""), r is own or bound))
         if rec is not None:
             note_reviewer_stop(repo, rec, payload.get("agent_id"), kind)
         _event(repo, {"event": "subagent_stop", "agent_type": kind, "recorded": rec is not None})

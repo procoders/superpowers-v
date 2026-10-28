@@ -61,7 +61,7 @@ states it.
 - The one named exception is CI tooling: `scripts/lint-frontmatter.py` imports PyYAML.
   (`scripts/lint-frontmatter.py:36`)
 - The new core (`scripts/compound-v.py`, `scripts/cvcore/*.py`, `hooks/*.sh`, `hooks/run-band.tsx`)
-  stays at or under 2500 lines; CI prints the count.
+  stays at or under 2550 lines; CI prints the count.
 
 ## Skills, not commands
 

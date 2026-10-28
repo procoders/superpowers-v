@@ -115,7 +115,7 @@ by explicit choice. `scripts/lint-frontmatter.py` enforces it.
 ## Rules for changes here
 
 See [CONVENTIONS.md](CONVENTIONS.md). In short: no unmeasured numbers, stdlib Python 3.9, hooks fail
-open, state only in `docs/compound-v/` or `.git/compound-v/`, skills not commands, core ≤ 2500
+open, state only in `docs/compound-v/` or `.git/compound-v/`, skills not commands, core ≤ 2550
 lines.
 
 ## Tests

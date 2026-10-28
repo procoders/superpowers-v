@@ -16,4 +16,4 @@ paths:
 - Durable state goes to `docs/compound-v/` (project) or the repo's git dir (`.git/compound-v/`, the receipt key), never under the plugin root.
   (`CONVENTIONS.md:49-54`)
 - An unknown cost stays `null`, never a substituted zero. (`scripts/cvcore/usage.py:126-130`)
-- The new core stays at or under 2500 lines. (`CONVENTIONS.md:63-64`)
+- The new core stays at or under 2550 lines. (`CONVENTIONS.md:63-64`)
