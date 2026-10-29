@@ -8,7 +8,6 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 from . import run, usage
@@ -127,16 +126,8 @@ def stop_hook(payload: dict, repo: Path, budget_s=6.0, state_dir=None):
             return _block(f"Compound V run {rec['id']} is not verified: {_gaps(said['s'])}. "
                           + CONTINUE_TEXT)
         return None
-    except Exception as e:
-        _fail_open(repo, "stop", e)
-        return None
-
-
-def _fail_open(repo, hook: str, e: Exception) -> None:
-    try:
-        _event(repo, {"event": "hook_error", "hook": hook, "error": str(e)[:200]})
     except Exception:
-        pass
+        return None
 
 
 def subagent_stop_hook(payload: dict, repo: Path, state_dir=None):
@@ -150,25 +141,15 @@ def subagent_stop_hook(payload: dict, repo: Path, state_dir=None):
         if live is not None and (bound or own is None):  # binds a run started inside this turn, so its cost is seen
             _attach(repo, live, sid, payload.get("transcript_path"), Path(state_dir or default_state_dir()))
         if kind.split(":")[-1] != "reviewer":
-            _event(repo, {"event": "subagent_stop", "agent_type": kind, "recorded": False})
             return None
         # the reviewer works on the newest checkout; without one the session's own run (even one the Stop hook closed) wins
         rec = max((r for r in (live, own) if r is not None), default=None, key=lambda r: (
             max((str(c.get("at", "")) for c in r.get("checkouts", [])), default=""), r is own or bound))
         if rec is not None:
             note_reviewer_stop(repo, rec, payload.get("agent_id"), kind)
-        _event(repo, {"event": "subagent_stop", "agent_type": kind, "recorded": rec is not None})
     except Exception:
         pass
     return None
-
-
-def _event(repo, row: dict) -> None:
-    path = Path(repo) / run.RUNS / "triage.log"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    row = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), **row}
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(row) + "\n")
 
 
 def _gaps(s: dict) -> str:
@@ -178,10 +159,6 @@ def _gaps(s: dict) -> str:
     if s["budget"].get("exceeded"):
         parts.append("budget exceeded")
     return "; ".join(parts) or s["outcome"]
-
-
-def _log(repo, sid, tier, reason, chars) -> None:
-    _event(repo, {"session": sid, "tier": tier, "reason": reason, "prompt_chars": chars})
 
 
 HARNESS = ("<task-notification", "<system-reminder", "[system notification", "<local-command")
@@ -224,14 +201,12 @@ def prompt_hook(payload: dict, repo: Path, state_dir: Path):
             _attach(repo, unbound[0], sid, transcript, sd)
         why = _filtered(text)
         if why:
-            _log(repo, sid, None, why, len(text))
             return None
         rec = run.active(repo, sid) if sid else None
         if rec and sid in rec.get("sessions", []):
             if (sd / f"change-{k}").exists():
                 (sd / f"change-{k}").unlink()
             _attach(repo, rec, sid, transcript, sd)
-            _log(repo, sid, rec["tier"], "open run", len(text))
             text_brief = brief(repo, sid)
             digest = hashlib.sha256(text_brief.encode()).hexdigest()
             seen = sd / f"brief-{k}"
@@ -244,11 +219,9 @@ def prompt_hook(payload: dict, repo: Path, state_dir: Path):
         counter = sd / f"nudges-{k}"
         count = len(counter.read_text()) if counter.exists() else 0
         if count >= MAX_ATTEMPTS:
-            _log(repo, sid, tier or "full", "nudges spent", len(text))
             return None
         with open(counter, "a") as f:
             f.write("x")
-        _log(repo, sid, tier or "full", "classified" if tier else "unclassified", len(text))
         return LIGHT_TEXT if tier == "light" else FULL_TEXT
     except Exception:
         return None

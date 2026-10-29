@@ -310,17 +310,6 @@ class HooksTest(unittest.TestCase):
         self.assertEqual(["s1"], self.load(rec)["sessions"])
         self.assertTrue(text.startswith(f"Compound V run {rec['id']}"), text)
 
-    def test_triage_log_has_no_prompt_text(self):
-        secret = "add a booking page for maria.ivanova@example.com"
-        self.prompt(secret)
-        self.prompt("hi")
-        log = (self.repo / "docs/compound-v/runs/triage.log").read_text()
-        self.assertNotIn("maria", log)
-        rows = [json.loads(x) for x in log.splitlines()]
-        self.assertEqual(["full", None], [r["tier"] for r in rows])
-        self.assertEqual(len(secret), rows[0]["prompt_chars"])
-        self.assertEqual({"at", "session", "tier", "reason", "prompt_chars"}, set(rows[0]))
-
     def test_prompt_filters(self):
         for text in ("hi", "/compound-v:init", "what is this?", "explain src/a.js",
                      "Thanks!"):
@@ -423,25 +412,13 @@ class HooksTest(unittest.TestCase):
         self.assertNotIn("reviewer_stops", self.load(loose))
         self.assertIsNone(run.reopenable(self.repo, None))
 
-    def test_subagent_stop_logged(self):
-        self.start()
-        for kind in ("Explore", "compound-v:reviewer"):
-            hooks.subagent_stop_hook({"hook_event_name": "SubagentStop", "session_id": "s1",
-                                      "agent_id": "a", "agent_type": kind}, self.repo,
-                                     state_dir=self.state)
-        rows = [json.loads(x) for x in
-                (self.repo / "docs/compound-v/runs/triage.log").read_text().splitlines()]
-        self.assertEqual([("Explore", False), ("compound-v:reviewer", True)],
-                         [(r["agent_type"], r["recorded"]) for r in rows])
-
     def test_harness_notices_ignored(self):
         for text in ("<task-notification>build finished</task-notification>",
                      "  <system-reminder>add a page</system-reminder>",
                      "[SYSTEM NOTIFICATION] Fix the broken search", "<local-command-stdout>x"):
             self.assertIsNone(self.prompt(text), text)
         self.assertFalse((self.state / "change-s1").exists())
-        rows = (self.repo / "docs/compound-v/runs/triage.log").read_text()
-        self.assertEqual(4, rows.count("harness notice"))
+        self.assertFalse((self.repo / "docs/compound-v/runs/triage.log").exists())
 
     def test_guard_denies_run_record_edit(self):
         for tool, key in (("Write", "file_path"), ("Edit", "file_path"),

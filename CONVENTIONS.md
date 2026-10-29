@@ -46,7 +46,7 @@ states it.
 
 ## Where state lives
 
-- Project state: `docs/compound-v/` only (specs, plans, pre-flights, runs, receipts, the triage log).
+- Project state: `docs/compound-v/` only (specs, plans, pre-flights, runs, receipts).
   (`scripts/cvcore/run.py:15`)
 - Per-clone state: `.git/compound-v/` only (the receipt key; the sandbox lets commands write there, not to `~/.claude`). (`scripts/cvcore/receipts.py:23,36-42`)
 - Per-session hook markers (refused-once, nudge count) are scratch files in the system temp dir, or

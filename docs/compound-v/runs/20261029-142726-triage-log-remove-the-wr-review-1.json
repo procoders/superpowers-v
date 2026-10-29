@@ -1,0 +1,30 @@
+{
+  "snapshot": "d7ebddc8789a8a3469f5c62b3219b06b2c9fb791",
+  "summary": "Ship. The removal does what was asked: the writer, the two tests and the CONVENTIONS mention are gone. All hooks still fail open, including with an injected exception and with docs/compound-v/runs being a file, and no hook recreates triage.log. Core tests (164), hook wrapper/band/onboard/skills tests, frontmatter lint and shellcheck pass, and core is 2490 lines. One low edge remains: if a user committed the leftover log and deletes it during an open run, scope flags the deletion.",
+  "coverage": [
+    "0",
+    "1 skipped: no web app or HTTP surface",
+    "2",
+    "3 skipped: no HTTP methods or state-changing routes",
+    "4 skipped: no sessions, login or credentials in this change",
+    "5 skipped: no public create or lookup endpoints",
+    "6 skipped: no login flow",
+    "7 skipped: no input normalisers touched",
+    "8 skipped: the change has no date or clock rules",
+    "9 skipped: no personal-data erasure path touched"
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "low",
+      "title": "Deleting a committed leftover triage.log during an open run is a scope violation",
+      "evidence": "scripts/cvcore/snapshot.py:38-42 unhashed() excludes evidence names only while the file exists on disk, and scope.py:14 builds its excludes from that list. In probe 2 (committed case), after `git commit` of docs/compound-v/runs/triage.log and `rm` of it inside a run, `compound-v.py scope` lists docs/compound-v/runs/triage.log under changed and violations. When the log is untracked (the common case, and how this repo has it via *.log in .gitignore), nothing is flagged. Before this change the prompt hook recreated the file at once, so a deletion rarely stuck. Now deleting the log is the natural cleanup.",
+      "reproduce": "cd CHECKOUT && python3 -I -B .review-probes/probe2.py | grep 'committed] scope after log delete'",
+      "file": "scripts/cvcore/snapshot.py",
+      "line_start": 38,
+      "line_end": 42,
+      "confidence": 0.6,
+      "recommendation": "Always exclude the literal path docs/compound-v/runs/triage.log in scope, present or not, or add a release note telling users to delete it outside an open run."
+    }
+  ]
+}
