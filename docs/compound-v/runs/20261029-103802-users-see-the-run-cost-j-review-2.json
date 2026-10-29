@@ -1,0 +1,22 @@
+{
+  "snapshot": "a9088b75fcf21dab6f34e7d02a974d9527f2a29b",
+  "summary": "F1 is fixed: the 4.0.1 CHANGELOG and release_notes.py output now carry a Fixed bullet for the run-cost jump, and its mechanism checks out against scripts/cvcore/usage.py. A probe with a partial trailing cost-state line credits $0.39 rather than doubling, the $857.24 -> $1714.87 figures fit 'the whole session credited again', and tests.core.test_usage passes (20 tests). The F2 decline holds. One low wording point remains: 4.0.0 reaches the jump by a different route than the bullet suggests.",
+  "coverage": [
+    "F1",
+    "F2"
+  ],
+  "findings": [
+    {
+      "id": "F1a",
+      "severity": "low",
+      "title": "'4.0.0 has the same path' is looser than the 4.0.0 code",
+      "evidence": "In v4.0.0 scripts/cvcore/usage.py, a parse error in last_cost_state is caught by the outer except and returns None. cost_state then returns None, so record() does nothing, and the restart branch is never reached that way. The $0 comes only from session_total() (transcript <= 8 MB with no parsed cost-state -> 0.0). hooks.py:256 uses session_total as the run-start baseline, so a new run gets credited the whole session once, not once per reading. Same root cause, same visible symptom (jump to the session cost), different route.",
+      "reproduce": "git show v4.0.0:scripts/cvcore/usage.py | sed -n 56,100p",
+      "file": "CHANGELOG.md",
+      "line_start": 1,
+      "line_end": 1,
+      "confidence": 0.7,
+      "recommendation": "Optional: reword to '4.0.0 can show the same jump through the run-start baseline.' Or leave as is: the user-visible claim (4.0.0 users are affected) is true."
+    }
+  ]
+}

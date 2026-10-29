@@ -1,0 +1,31 @@
+{
+  "snapshot": "dbe23f15a7f107ca79058a0a870be9b1ca151b0a",
+  "summary": "Ship. The 4.0.1 release does what the request asked: plugin.json and the CHANGELOG are both at 4.0.1 (marketplace carries no version), release_notes.py gives the title 'v4.0.1 — Run cost counted inside the turn' and a body with absolute links, the anti-fabricated-metrics gate and the size guard pass (2514 of 2550 lines), and 165 core tests pass. The section's claims about the in-turn pricing (8bae3e2), the band (aa4a679) and PR #24 (5975bc0) match the code; the only note is a low one about how the cost figures are compared.",
+  "coverage": [
+    "0",
+    "1",
+    "2",
+    "unit tests: python3 -m unittest discover -s tests/core (165 OK)",
+    "3 skipped: no app/routes/sessions/personal data in this diff",
+    "4 skipped: no app/routes/sessions/personal data in this diff",
+    "5 skipped: no app/routes/sessions/personal data in this diff",
+    "6 skipped: no app/routes/sessions/personal data in this diff",
+    "7 skipped: no app/routes/sessions/personal data in this diff",
+    "8 skipped: no app/routes/sessions/personal data in this diff",
+    "9 skipped: no app/routes/sessions/personal data in this diff"
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "low",
+      "title": "Release note compares one run's cost with the whole session's (inference: makes the gap look bigger than the source says)",
+      "evidence": "CHANGELOG.md 4.0.1 'Fixed' item: 'the run record held $0.63 against the $7 budget while the session spent $32.14'. docs/v4/sumit-run.md:122 says $0.63 is for run 1 only (runs 2 and 3 showed nothing), and sumit-run.md:45-46 puts the whole session at $32.14 across all three runs and run 1 at about $19 (estimate). Every number is sourced and literally true. Only the comparison mixes one run with three.",
+      "reproduce": "sed -n 45,46p docs/v4/sumit-run.md; sed -n 122,123p docs/v4/sumit-run.md; grep -n '0.63' CHANGELOG.md",
+      "file": "CHANGELOG.md",
+      "line_start": 15,
+      "line_end": 17,
+      "confidence": 0.6,
+      "recommendation": "Write 'the run records held $0.63 for run 1 and nothing for runs 2 and 3, while the session spent $32.14'. Alternatively, compare $0.63 with run 1's ≈$19 estimate."
+    }
+  ]
+}

@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [4.0.1] — 2026-10-29
+
+<!-- title: Run cost counted inside the turn -->
+
+### Fixed
+
+- **Run cost showed $0.00 during a turn.** Claude Code writes its `cost-state` record only when a turn ends,
+  and subagent transcripts carry none. A build done in one long turn therefore went almost uncounted: on
+  Sumit's brief the run records held $0.63 for run 1 and nothing for runs 2 and 3, while the session spent
+  $32.14 ([docs/v4/sumit-run.md](docs/v4/sumit-run.md)). The CLI now prices every response after the last
+  `cost-state`, in the main transcript and in `subagents/**`, at the list prices in `scripts/cvcore/prices.json`
+  (source cited there). It labels the figure an estimate.
+- **Run cost jumped to the whole session's cost.** When the newest line holding `"cost-state"` was one Claude
+  Code was still writing, the reader failed to parse it and took the transcript for one with no finished turn
+  ($0). The run was then credited the whole session's cost again, once per such reading: on this repository a
+  release run's band showed $857.24, then $1714.87. 4.0.0 has the same path. An unparsable line is now
+  skipped, so the scan reaches the previous complete record (`scripts/cvcore/usage.py`, `_parse`).
+- **Background reviewers were not recorded.** The Stop hook can close a run as incomplete while the main agent
+  waits on a background `reviewer`, and such a reviewer ends with the `SubagentHandback` tool result rather
+  than `end_turn`. The stop is now recorded on the session's own run, even one closed incomplete (never a
+  verified one), and that ending counts as finished
+  ([procoders/superpowers-v#24](https://github.com/procoders/superpowers-v/pull/24), by khymerao).
+
+### Changed
+
+- **Run band.** Quota is read once when a run appears and then follows `session.measure` instead of being
+  polled; each run keeps its own baseline. The band fits `bodyColumns` and wraps on narrow screens.
+- **Core size cap 2500 → 2550 lines** (`CONVENTIONS.md`, CI size guard).
+
 ## [4.0.0] — 2026-10-23
 
 <!-- title: Compound V 4: standalone, asks first, proves before done -->

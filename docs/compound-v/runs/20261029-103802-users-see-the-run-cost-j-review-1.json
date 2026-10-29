@@ -1,0 +1,42 @@
+{
+  "snapshot": "a7a03f6e662a4b38fdd93798ab5aea1e6e9e2e0d",
+  "summary": "The fix closes the claimed cause: a cost-state line cut at any of 148 byte offsets (mid-UTF-8 included), and a half-written user line that quotes cost-state, both fall back to the previous complete cost-state. A recorded run keeps its cost across the partial reading, a genuine restart is still counted, an unreadable transcript yields no reading rather than a zero, and all 166 core tests pass. Two problems remain. The 4.0.1 CHANGELOG does not mention the jump fix the user asked to release, although 4.0.0 had the same zero-reading path. Separately, a stale prompt baseline still over-credits a run with spending from before it started (pre-existing).",
+  "coverage": [
+    "0",
+    "1",
+    "2",
+    "3 skipped: no app/routes",
+    "4 skipped: no sessions/auth",
+    "5 skipped: no forms",
+    "6 skipped: no login",
+    "7 skipped: no personal data",
+    "8 skipped: no HEAD/GET endpoints",
+    "9 skipped: no public create/lookup"
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "medium",
+      "title": "4.0.1 CHANGELOG omits the run-cost jump fix the release was cut for",
+      "evidence": "CHANGELOG.md:9-31 lists only the in-turn pricing, the #24 reviewer fix, the band and the size cap; nothing about the doubled counter ($857 -> $1714). The same path shipped in v4.0.0: `git show v4.0.0:scripts/cvcore/usage.py` has `_parse` raising on a partial line, so `last_cost_state` returned None and `session_total` returned 0.0 for transcripts <= 8 MB, which triggered the `start_usd -= last_usd` restart branch. 4.0.0 users can hit it, and `release_notes.py 4.0.1` produces notes that do not say it is fixed.",
+      "reproduce": "grep -n 'half\\|restart\\|new process\\|still being written' CHANGELOG.md | head -3; python3 .github/scripts/release_notes.py 4.0.1 procoders/superpowers-v --out /dev/stdout",
+      "file": "CHANGELOG.md",
+      "line_start": 13,
+      "line_end": 31,
+      "confidence": 0.85,
+      "recommendation": "Add a Fixed bullet: a cost-state line Claude Code was still writing read as 'no turn yet' (cli $0), so the run was credited the whole session again; an unparsable line is now skipped (scripts/cvcore/usage.py `_parse`)."
+    },
+    {
+      "id": "F2",
+      "severity": "medium",
+      "title": "Prompt baseline is written once and kept, so a later run is credited spending from before it started",
+      "evidence": "scripts/cvcore/hooks.py:261-265 `_arm` writes baseline-<sid> only `if not base.exists()`, and the file is removed only in `_attach` (hooks.py:78-79) once a run records usage. A session that had an unbound prompt at $1, then worked to $50 before the prompt that starts a run, gets start_usd = 1.0. The intended semantics (tests/core/test_hooks.py:273 `test_prompt_records_baseline_before_work`) count from the prompt that led to the run. This is pre-existing and not introduced by this diff, but it feeds a wrong baseline into apply_cost and inflates the band the same way the user reported.",
+      "reproduce": "cd CHECKOUT && python3 .review-probes/p2.py   # prints run_cost 54.0; spending since the run's prompt is 5.0",
+      "file": "scripts/cvcore/hooks.py",
+      "line_start": 257,
+      "line_end": 265,
+      "confidence": 0.7,
+      "recommendation": "Refresh the baseline on every unbound prompt (drop the `if not base.exists()` guard, keep the unpriced check), so it always holds the cost at the latest prompt before the run is created."
+    }
+  ]
+}

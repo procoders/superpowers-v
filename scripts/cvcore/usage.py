@@ -13,10 +13,13 @@ PRICES = json.loads(Path(__file__).with_name("prices.json").read_text(encoding="
 
 
 def _parse(line: bytes):
-    d = json.loads(line.decode("utf-8"))
-    if isinstance(d, dict) and d.get("type") == "cost-state":
-        return {"session": d.get("sessionId"), "total_usd": float(d["totalCostUSD"]),
-                "unknown_cost": bool(d.get("hasUnknownModelCost"))}
+    try:  # a line still being written is skipped; reading it as "no turn yet" restarted the count
+        d = json.loads(line.decode("utf-8"))
+        if isinstance(d, dict) and d.get("type") == "cost-state":
+            return {"session": d.get("sessionId"), "total_usd": float(d["totalCostUSD"]),
+                    "unknown_cost": bool(d.get("hasUnknownModelCost"))}
+    except (ValueError, KeyError, TypeError):
+        return None
 
 
 def last_cost_state(transcript):

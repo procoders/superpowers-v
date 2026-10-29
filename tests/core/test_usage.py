@@ -63,6 +63,20 @@ class UsageTest(unittest.TestCase):
         self.transcript.write_text(cost_line(1.5) + "\n" + quoted + "\n")
         self.assertEqual(1.5, usage.last_cost_state(self.transcript)["total_usd"])
 
+    def test_half_written_cost_state_does_not_restart_the_count(self):
+        rec = run.start(self.repo, tier="full", request="x")
+        self.spend(rec, 1.0)
+        self.spend(rec, 1.5)
+        line = cost_line(2.0)
+        with open(self.transcript, "a") as f:
+            f.write(line[:-5])  # Claude Code is still writing it
+        self.assertEqual(1.5, usage.last_cost_state(self.transcript)["total_usd"])
+        usage.record(self.repo, rec, "s1", self.transcript)
+        with open(self.transcript, "a") as f:
+            f.write(line[-5:] + "\n")
+        usage.record(self.repo, rec, "s1", self.transcript)
+        self.assertEqual(1.0, usage.run_cost(rec))
+
     def test_turn_longer_than_any_tail_keeps_counting(self):
         # Review F2: a turn whose transcript runs 20 MB past the last cost-state still finds it,
         # quickly, and keeps pricing what follows, so the budget can trip.

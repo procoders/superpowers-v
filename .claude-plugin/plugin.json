@@ -1,7 +1,7 @@
 {
   "name": "compound-v",
   "description": "Senior-engineer habits for Claude Code: a one-question-at-a-time brainstorm, one builder that researches, plans and codes (with a DESIGN.md design pass for UIs), then verification with tests, a real browser, an independent reviewer and a scope check, each a signed receipt bound to the working tree.",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "author": {
     "name": "Oleg",
     "email": "copeus@gmail.com"
