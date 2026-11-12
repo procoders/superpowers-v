@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [4.1.0] — 2026-11-12
+
+<!-- title: Claude Fable 5.2 priced; triage.log removed -->
+
+### Added
+
+- **Claude Fable 5.2 in the run cost.** `scripts/cvcore/prices.json` lists `claude-fable-5-2` at the published
+  rates, re-read on 2026-11-12: $8 input, $10 and $16 cache writes (5 min, 1 h), $0.20 cache hit, $40 output
+  per million tokens. Before this, a session on Fable 5.2 left the run's cost unknown. Mythos 5.2 carries the
+  same rates under `claude-mythos-5-2`. The pricing page gives no API id for it, so the id follows the 5.1
+  pattern.
+
+### Removed
+
+- **`docs/compound-v/runs/triage.log`.** The hooks appended to it on every prompt and subagent stop, and
+  nothing read it. The tree snapshot still skips a leftover file. Delete a committed one between runs: deleting
+  it while a run is open counts against that run's scope.
+
+### Checked, unchanged
+
+- **Codex reviewer stays on `gpt-6-astra`.** On codex-cli 0.162.1, `codex debug models` still lists Astra as
+  the frontier model. The new `gpt-6.1-terra` is a balanced model, not a review one. A live `codex exec -m
+  gpt-6-astra` answered, and the flags `review codex` passes are all still in `codex exec --help`.
+- **Antigravity.** Gemini 4 Argon and Carbon are in `agy models`, but Compound V 4 calls no Gemini model, so
+  nothing changes.
+
 ## [4.0.1] — 2026-10-29
 
 <!-- title: Run cost counted inside the turn -->

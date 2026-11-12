@@ -1,0 +1,17 @@
+{
+  "snapshot": "44d382cd99fd152bda28abbe5119bae9015ae3d0",
+  "summary": "Ship. Every item in the request is answered: Fable 5.2 (and Mythos 5.2) priced in prices.json and consumed exactly like sibling rows (_usd incl. 5m/1h breakdown, web search, speed/geo guards, cost_state now 0 unpriced vs 1 without the row); Codex reviewer correctly stays on gpt-6-astra (review.py:18); Argon/Carbon need no change since no Gemini/agy model is called. Version 4.1.0, release_notes.py yields the right title and body, lint clean, core 2490 lines, 165 core tests and all hook tests pass. No material findings.",
+  "coverage": [
+    "0",
+    "1 skipped: no web app, login or form in this change",
+    "2",
+    "3 skipped: no date or clock rules changed",
+    "4 skipped: no HTTP endpoints exist",
+    "5 skipped: no sessions or credentials in this change",
+    "6 skipped: no login in this plugin",
+    "7 skipped: no create or lookup endpoint",
+    "8 skipped: no personal data or erasure",
+    "9 skipped: no browser UI"
+  ],
+  "findings": []
+}

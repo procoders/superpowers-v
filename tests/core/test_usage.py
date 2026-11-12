@@ -282,6 +282,12 @@ class UsageTest(unittest.TestCase):
         cs = usage.cost_state("s1", self.transcript, rec["created_at"])
         self.assertEqual((1.0, 1), (cs["estimated_usd"], cs["unpriced"]))
 
+    def test_fable_5_2_is_priced(self):
+        m = {"model": "claude-fable-5-2", "usage": {
+            "input_tokens": 1_000_000, "cache_creation_input_tokens": 1_000_000,
+            "cache_read_input_tokens": 1_000_000, "output_tokens": 1_000_000}}
+        self.assertAlmostEqual(8 + 10 + 0.2 + 40, usage._usd(m))
+
     def test_cli_usage_prints_the_basis(self):
         # Review F5.
         run.start(self.repo, tier="full", request="x")
